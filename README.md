@@ -11,9 +11,10 @@
 > sandbox** — never directly on your host, and never against systems or data you
 > care about. You are responsible for what it does with your API key and network.
 
-> A minimal **agent seed** that boots from almost nothing and then rewrites,
-> tests, and promotes **better versions of itself** — inside a hardened Docker
-> sandbox that contains the damage rather than preventing it.
+> A small, **architecture-agnostic micro agentic runtime** — a learning
+> playground for self-improving agents. It boots from almost nothing, then
+> rewrites, tests, and promotes **better versions of itself**, inside a hardened
+> Docker sandbox that contains the damage rather than preventing it.
 
 EVA starts as a tiny, non-evolving kernel plus one seed release. Give it an API
 key and run it in one of three modes:
@@ -33,6 +34,10 @@ The whole point is that *the thing being improved and the thing doing the
 improving are the same organism* — but every change is a gated, reversible,
 test-ratcheted step, never live surgery on a running system.
 
+It stays small and provider-agnostic — EVA reads its own code with plain shell
+(`grep`/`sed`), talks to any OpenAI-compatible endpoint through one tiny text
+protocol, and keeps a budgeted, resumable session.
+
 ## Why a seed, not a framework?
 
 Most agent stacks are **large and human-assembled**: a rich toolbox, a curated
@@ -48,8 +53,8 @@ built from scratch**:
   scaffolding — is a handful of small files you can read in one sitting. Almost
   nothing is baked in.
 - **Grown, not assembled.** Capabilities aren't pre-installed; they **emerge**
-  when the agent hits real friction and evolves a fix. The v001→v002→v003 chain
-  below wasn't planned — it happened.
+  when the agent hits real friction and evolves a fix — added the moment a real
+  failure demands it, not planned up front.
 - **An organism, not an app.** `organism.py` is the immutable **DNA**; each
   release is a **phenotype** that may mutate; the gates are **natural selection**
   (only provably-not-worse versions survive); the friction backlog is the
@@ -67,23 +72,6 @@ shaped to one person — you — instead of the average user. Large, established
 assistants optimize for everyone and tend to skip exactly that: deep, individual
 fit. The wager is that a seed which adapts to its user may end up fitting better
 than a product shipped finished.
-
----
-
-## Seeing is believing
-
-This isn't a thought experiment — here is a real, unedited run on `gpt-5.5`:
-
-| Gen | How | What EVA changed to itself |
-|----|-----|----------------------------|
-| **v001** | seed | The minimal organism it starts from. |
-| **v002** | `improve` (human-approved) | Its own LLM output once contained invalid JSON → it logged that friction, then **hardened its JSON parser** to recover protocol objects from fenced/prose wrappers **and added a behavioral regression test** for it. |
-| **v003** | `evolve --yes` (fully autonomous) | Found a **subtle bug in its own v002 fix** (it could grab an incidental `{"note": ...}` before the real action object), corrected it, strengthened the test — and **self-recovered from a real shell error mid-run**. Auto-promoted after passing all gates. |
-
-Friction from real use → a targeted fix → a test that locks it in → gated,
-rollback-protected promotion. Each generation refined the last.
-
----
 
 ## How it works
 
@@ -169,6 +157,7 @@ Copy-Item .env.example .env      # then set LLM_API_KEY (and LLM_MODEL)
 # 3. try it
 .\run.ps1 review                 # read-only: EVA inspects & explains itself
 .\run.ps1 work "research today's weather for Berlin"
+.\run.ps1 work resume            # continue an interrupted session
 .\run.ps1 improve "add a CHANGELOG and report it in work mode"   # directed self-change
 .\run.ps1 status                 # show active / last-good release
 .\run.ps1 rollback               # revert to the last good release
@@ -184,7 +173,11 @@ On Linux/macOS use `./run.sh` with the same commands.
 | `review [task]` | Read-only inspection — no writes, no evolution. |
 | `improve [task]` | **Directed** self-change — builds a gated candidate that implements *your* task (asks before each change). |
 | `evolve [N] [flags]` | **Autonomous** self-change — EVA picks the improvement itself and runs N rounds. |
+| `work resume` / `improve resume` | Continue an interrupted session — the conversation is persisted to disk after every step and survives a restart. |
 | `status` / `rollback` | Show pointers / revert to `LAST_GOOD`. |
+
+`work`, `improve`, and `review` run as an **interactive chat** — after each turn
+you can type a follow-up; press Enter on an empty line (or type `exit`) to end.
 
 Run fully hands-off (tolerable **only** because Docker contains it):
 
@@ -194,10 +187,8 @@ Run fully hands-off (tolerable **only** because Docker contains it):
 
 ### Model providers
 
-EVA bootstraps via the OpenAI **Responses API** (`/v1/responses`) by default.
-The provider layer is endpoint-detected, so any `/v1/chat/completions` endpoint
-(Azure OpenAI, Ollama, LM Studio, vLLM, OpenRouter, ...) also works unchanged —
-and the layer is freely evolvable. For a fully local, offline-capable setup:
+Set the endpoint, model, and key in `.env`. Any OpenAI-compatible API works. For
+a fully local, offline setup:
 
 ```dotenv
 LLM_ENDPOINT=http://host.docker.internal:11434/v1/chat/completions
@@ -217,18 +208,6 @@ Delete `data/` to wipe all evolution and start fresh — `status` re-seeds `v001
 The seed in `organism.py` is unchanged by evolution; new generations live only in
 `data/`.
 
-## Design philosophy
-
-- **Minimal seed, emergent capability.** The kernel is intentionally tiny.
-  Capabilities EVA needs should *emerge* from friction, not be designed in.
-- **Coupled, but phase-separated.** EVA changes EVA (no decoupled "builder"
-  capping its growth), yet changes take effect only as validated, reversible,
-  atomic swaps.
-- **Fitness from friction.** The selection pressure for "useful" comes from real
-  usage — failures, tool gaps, and your feedback — captured persistently.
-- **Invariants live in the immutable part.** A self-modifying system's
-  constitution must sit where the system can't rewrite it.
-
 ## Honest limitations
 
 This is an experimental research project, not production software.
@@ -237,6 +216,8 @@ This is an experimental research project, not production software.
   live LLM/tool flows.
 - The ratchet counts test functions; it can't see a test *body* being weakened.
 - Rollback is single-level (`LAST_GOOD`), not a full history stack.
+- Context summarization is deterministic and rudimentary, and only one session is
+  kept at a time.
 - Network egress is open by default (see residual risk above).
 
 ## Repository layout
