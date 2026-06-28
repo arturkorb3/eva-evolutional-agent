@@ -1,0 +1,3 @@
+# Keep the build context tiny and secret-free: only the kernel enters the image.
+*
+!organism.py

@@ -1,0 +1,62 @@
+# EVA secure sandbox.
+#
+# Preferred usage is via the wrappers:   .\run.ps1 <cmd>   /   ./run.sh <cmd>
+# Or directly:                           docker compose run --rm eva <organism args>
+#
+# Why a sandbox: EVA can run arbitrary shell commands, rewrite its own source
+# and promote new versions of itself. The hardening below contains a misbehaving
+# (or autonomous) agent to this container and the three bind mounts only.
+
+services:
+  eva:
+    build: .
+    image: eva:latest
+    init: true # proper PID 1, reaps child processes spawned by the shell action
+
+    # ---------------------------------------------------------------------
+    # Isolation / hardening
+    # ---------------------------------------------------------------------
+    read_only: true # immutable root filesystem; only the mounts + tmpfs below are writable
+    cap_drop:
+      - ALL # drop every Linux capability
+    security_opt:
+      - no-new-privileges:true # block setuid-based privilege escalation
+    user: "10001:10001" # never run as root
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5" # cap CPU
+          memory: 1g # cap memory
+          pids: 256 # contain fork bombs from the shell action
+
+    tmpfs:
+      - /tmp:size=64m,mode=1777 # writable scratch space without touching the host
+
+    # Allow reaching a model server running on the host (Ollama / LM Studio),
+    # also on Linux. On Docker Desktop this name resolves automatically.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      # LLM connection (OpenAI-compatible /chat/completions). Set these in .env.
+      LLM_ENDPOINT: "${LLM_ENDPOINT:-https://api.openai.com/v1/responses}"
+      LLM_MODEL: "${LLM_MODEL:-}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      # Optional autonomous mode. Only safe because this container contains it.
+      ORGANISM_AUTO_YES: "${ORGANISM_AUTO_YES:-}"
+      ORGANISM_ALLOW_SHELL: "${ORGANISM_ALLOW_SHELL:-}"
+
+    # Persist + expose everything the organism evolves, on the host.
+    # The kernel (organism.py) is intentionally NOT mounted, so the agent
+    # cannot modify it.
+    volumes:
+      - ./data/runtime:/eva/runtime
+      - ./data/state:/eva/state
+      - ./data/workspace:/eva/workspace
+
+    # Needed for interactive approval prompts and API-key entry.
+    stdin_open: true
+    tty: true

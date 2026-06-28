@@ -1,0 +1,9 @@
+# Secrets - never commit your API key
+.env
+
+# Everything the organism evolves at runtime
+/data/
+
+# Python
+__pycache__/
+*.pyc
