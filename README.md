@@ -29,10 +29,11 @@ test-ratcheted step, never live surgery on a running system.
 
 ## Why a seed, not a framework?
 
-Most agent stacks are **large and finished**: a fixed toolbox, a hand-tuned
-prompt library, an orchestration layer — assembled up front by humans and then
-mostly frozen. A full-featured harness like **OpenClaw** sits at the polished,
-batteries-included end of that spectrum.
+Most agent stacks are **large and human-assembled**: a rich toolbox, a curated
+prompt library, an orchestration layer — designed up front by people and then
+extended by people. A full-featured harness like **OpenClaw** sits at the
+polished, batteries-included end of that spectrum: powerful and very extensible,
+but it grows because *humans* keep building on it.
 
 EVA is the opposite bet, and it is unapologetically a **research experiment,
 built from scratch**:
