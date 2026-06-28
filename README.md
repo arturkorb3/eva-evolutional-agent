@@ -32,8 +32,8 @@ test-ratcheted step, never live surgery on a running system.
 Most agent stacks are **large and human-assembled**: a rich toolbox, a curated
 prompt library, an orchestration layer — designed up front by people and then
 extended by people. A full-featured harness like **OpenClaw** sits at the
-polished, batteries-included end of that spectrum: powerful and very extensible,
-but it grows because *humans* keep building on it.
+polished, batteries-included end of that spectrum: powerful and highly
+extensible.
 
 EVA is the opposite bet, and it is unapologetically a **research experiment,
 built from scratch**:
@@ -54,6 +54,13 @@ hand-write before an agent can start writing — and improving — itself?*
 
 > This is a lab for that question, not a product. Expect rough edges, prize the
 > transparency over polish, and keep it in the sandbox.
+
+**Where it could lead.** Because EVA grows from *your* friction and *your*
+feedback, it can in principle evolve toward a personal-assistant architecture
+shaped to one person — you — instead of the average user. Large, established
+assistants optimize for everyone and tend to skip exactly that: deep, individual
+fit. The wager is that a seed which adapts to its user may end up fitting better
+than a product shipped finished.
 
 ---
 
