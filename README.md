@@ -77,14 +77,14 @@ rollback-protected promotion. Each generation refined the last.
 flowchart TD
     K["organism.py<br/>tiny immutable kernel"] -->|seeds & runs| R["active release vNNN"]
     R -->|work mode| W["useful work in workspace/"]
-    W -->|errors, tool gaps, your feedback| B[("friction backlog")]
-    B -->|same friction repeats N times| P{"pivot?"}
+    W -->|friction| B[("friction backlog<br/>errors · tool gaps · feedback")]
+    B -->|repeats N times| P{"pivot?"}
     P -->|yes| C["candidate vNNN+1"]
     R -->|improve / evolve mode| C
     C --> SG["supervisor gate<br/>smoke · dry-runs · qualification"]
     SG --> KG["kernel gate<br/>+ immutable constitution"]
     KG -->|pass + approval| SW["self-swap: CURRENT → candidate"]
-    SW -.->|keeps LAST_GOOD| RB["rollback anytime"]
+    SW -.->|LAST_GOOD| RB["rollback anytime"]
 ```
 
 - **`organism.py`** is the only fixed part — a tiny kernel that seeds the first
