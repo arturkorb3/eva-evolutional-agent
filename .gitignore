@@ -3,6 +3,7 @@
 
 # Everything the organism evolves at runtime
 /data/
+data_backup_*/
 
 # Python
 __pycache__/

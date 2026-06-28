@@ -16,12 +16,18 @@
 > sandbox that contains the damage rather than preventing it.
 
 EVA starts as a tiny, non-evolving kernel plus one seed release. Give it an API
-key and a task, and it does two things at once:
+key and run it in one of three modes:
 
-- **Work** — does useful work for you with shell + file + network tools.
-- **Evolve** — when it hits friction, it builds a *candidate* version of its own
-  code, checks it is plausibly safer/better through layered gates, and — with
-  your approval (or fully autonomously in the sandbox) — **swaps itself** for it.
+- **`work`** — does useful work for you in `workspace/` with shell + file +
+  network tools. It can *report* on itself, but never rewrites its own code.
+- **`improve`** — **directed** self-change: you hand it a concrete task and it
+  builds a *candidate* version of its own code that implements **exactly that**.
+- **`evolve`** — **autonomous** self-change: EVA chooses the improvement itself,
+  typically fixing the friction it has hit most often.
+
+Self-modification is locked to `improve` and `evolve`; `work` can never touch the
+release. Both produce a *candidate* that must clear layered gates before — with
+your approval (or fully autonomously in the sandbox) — EVA **swaps itself** for it.
 
 The whole point is that *the thing being improved and the thing doing the
 improving are the same organism* — but every change is a gated, reversible,
@@ -163,7 +169,7 @@ Copy-Item .env.example .env      # then set LLM_API_KEY (and LLM_MODEL)
 # 3. try it
 .\run.ps1 review                 # read-only: EVA inspects & explains itself
 .\run.ps1 work "research today's weather for Berlin"
-.\run.ps1 improve                # evolve a candidate (asks before each change)
+.\run.ps1 improve "add a CHANGELOG and report it in work mode"   # directed self-change
 .\run.ps1 status                 # show active / last-good release
 .\run.ps1 rollback               # revert to the last good release
 ```
@@ -176,8 +182,8 @@ On Linux/macOS use `./run.sh` with the same commands.
 |---|---|
 | `work [task]` | Useful work in `workspace/` (the default purpose). |
 | `review [task]` | Read-only inspection — no writes, no evolution. |
-| `improve [task]` | Build a candidate release; ask before each change. |
-| `evolve [N] [flags]` | Run N autonomous evolution rounds. |
+| `improve [task]` | **Directed** self-change — builds a gated candidate that implements *your* task (asks before each change). |
+| `evolve [N] [flags]` | **Autonomous** self-change — EVA picks the improvement itself and runs N rounds. |
 | `status` / `rollback` | Show pointers / revert to `LAST_GOOD`. |
 
 Run fully hands-off (tolerable **only** because Docker contains it):
