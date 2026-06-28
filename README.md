@@ -5,6 +5,12 @@
 ![sandbox](https://img.shields.io/badge/sandbox-Docker-2496ED)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
+> [!WARNING]
+> **Experimental and self-modifying.** EVA runs arbitrary shell commands and
+> rewrites its own source code. **Only ever run it inside the provided Docker
+> sandbox** — never directly on your host, and never against systems or data you
+> care about. You are responsible for what it does with your API key and network.
+
 > A minimal **agent seed** that boots from almost nothing and then rewrites,
 > tests, and promotes **better versions of itself** — safely, inside a hardened
 > Docker sandbox.
