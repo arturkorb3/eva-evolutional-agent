@@ -187,14 +187,7 @@ Run fully hands-off (tolerable **only** because Docker contains it):
 
 ### Model providers
 
-Set the endpoint, model, and key in `.env`. Any OpenAI-compatible API works. For
-a fully local, offline setup:
-
-```dotenv
-LLM_ENDPOINT=http://host.docker.internal:11434/v1/chat/completions
-LLM_MODEL=llama3.1
-LLM_API_KEY=ollama
-```
+Set the endpoint, model, and key in `.env`. Currently OpenAI-compatible models are supported (improve EVA to support more).
 
 ## Inspecting & resetting
 
