@@ -27,6 +27,33 @@ The whole point is that *the thing being improved and the thing doing the
 improving are the same organism* — but every change is a gated, reversible,
 test-ratcheted step, never live surgery on a running system.
 
+## Why a seed, not a framework?
+
+Most agent stacks are **large and finished**: a fixed toolbox, a hand-tuned
+prompt library, an orchestration layer — assembled up front by humans and then
+mostly frozen. A full-featured harness like **OpenClaw** sits at the polished,
+batteries-included end of that spectrum.
+
+EVA is the opposite bet, and it is unapologetically a **research experiment,
+built from scratch**:
+
+- **Micro, not mega.** The whole runtime — the agent loop, the tools, the safety
+  scaffolding — is a handful of small files you can read in one sitting. Almost
+  nothing is baked in.
+- **Grown, not assembled.** Capabilities aren't pre-installed; they **emerge**
+  when the agent hits real friction and evolves a fix. The v001→v002→v003 chain
+  below wasn't planned — it happened.
+- **An organism, not an app.** `organism.py` is the immutable **DNA**; each
+  release is a **phenotype** that may mutate; the gates are **natural selection**
+  (only provably-not-worse versions survive); the friction backlog is the
+  **environment** applying pressure; rollback keeps every mutation reversible.
+
+The question EVA explores is small and a little wild: *how little do you have to
+hand-write before an agent can start writing — and improving — itself?*
+
+> This is a lab for that question, not a product. Expect rough edges, prize the
+> transparency over polish, and keep it in the sandbox.
+
 ---
 
 ## Seeing is believing
