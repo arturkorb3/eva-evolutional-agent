@@ -12,15 +12,15 @@
 > care about. You are responsible for what it does with your API key and network.
 
 > A minimal **agent seed** that boots from almost nothing and then rewrites,
-> tests, and promotes **better versions of itself** — safely, inside a hardened
-> Docker sandbox.
+> tests, and promotes **better versions of itself** — inside a hardened Docker
+> sandbox that contains the damage rather than preventing it.
 
 EVA starts as a tiny, non-evolving kernel plus one seed release. Give it an API
 key and a task, and it does two things at once:
 
 - **Work** — does useful work for you with shell + file + network tools.
 - **Evolve** — when it hits friction, it builds a *candidate* version of its own
-  code, proves the candidate is safer/better through layered gates, and — with
+  code, checks it is plausibly safer/better through layered gates, and — with
   your approval (or fully autonomously in the sandbox) — **swaps itself** for it.
 
 The whole point is that *the thing being improved and the thing doing the
@@ -97,11 +97,11 @@ flowchart TD
   **kernel gate**, then human approval (auto-approved only in autonomous mode).
 - `CURRENT` and `LAST_GOOD` pointers make every promotion **reversible**.
 
-## Why it's safe to run
+## Why it's contained (not "safe")
 
-EVA can run arbitrary shell commands, rewrite its own source, and promote new
-versions of itself — so it runs inside a hardened container
-([`docker-compose.yml`](docker-compose.yml)):
+Containment limits the *blast radius* — it does not make EVA trustworthy. Assume
+a run can do anything a shell can do, then keep that box small. EVA runs inside a
+hardened container ([`docker-compose.yml`](docker-compose.yml)):
 
 - non-root user, `cap_drop: ALL`, `no-new-privileges`
 - **read-only root filesystem**; only `./data/{runtime,state,workspace}` are writable
@@ -172,7 +172,7 @@ On Linux/macOS use `./run.sh` with the same commands.
 | `evolve [N] [flags]` | Run N autonomous evolution rounds. |
 | `status` / `rollback` | Show pointers / revert to `LAST_GOOD`. |
 
-Run fully hands-off (safe **only** because Docker contains it):
+Run fully hands-off (tolerable **only** because Docker contains it):
 
 ```powershell
 .\run.ps1 evolve 3 --yes --allow-shell
