@@ -31,7 +31,7 @@ test-ratcheted step, never live surgery on a running system.
 
 ## Seeing is believing
 
-This isn't a thought experiment — here is a real, unedited run on `gpt-4o-mini`:
+This isn't a thought experiment — here is a real, unedited run on `gpt-5.5`:
 
 | Gen | How | What EVA changed to itself |
 |----|-----|----------------------------|
