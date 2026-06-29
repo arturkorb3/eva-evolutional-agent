@@ -3,6 +3,9 @@
 
 # Everything the organism evolves at runtime
 /data/
+/runtime/
+/state/
+/workspace/
 data_backup_*/
 
 # Python

@@ -15,10 +15,19 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin eva \
     && mkdir -p /eva/runtime /eva/state /eva/workspace \
     && chown -R eva:eva /eva
 
+# A JavaScript runtime so the agent can execute/test JS it writes (node only,
+# no npm, to keep the image small). The agent itself still cannot install
+# software - the rootfs stays read-only at runtime.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /eva
 
-# Bake ONLY the kernel. The evolving organism never enters the image.
+# Bake ONLY the kernel and the initial genome (seed). The evolving organism
+# never enters the image; releases, state and workspace are bind-mounted.
 COPY --chown=eva:eva organism.py /eva/organism.py
+COPY --chown=eva:eva seed /eva/seed
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

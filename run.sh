@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-mkdir -p data/runtime data/state data/workspace
+mkdir -p data/runtime data/state data/workspace data/local
 
 cmd="${1:-help}"
 shift || true
@@ -18,6 +18,12 @@ case "$cmd" in
   build)    docker compose build ;;
   status)   eva status ;;
   rollback) eva rollback ;;
+  reseed)
+    # Drop the materialized runtime so the next start re-seeds v001 from seed/
+    # (mounted), without an image rebuild. State/workspace are kept.
+    rm -rf data/runtime
+    eva status
+    ;;
   work)     eva work "$@" ;;
   improve)  eva improve "$@" ;;
   review)   eva review "$@" ;;
@@ -40,6 +46,7 @@ Usage: ./run.sh <command> [args]
   review  [task]        Read-only inspection
   evolve  [N] [flags]   Run N autonomous evolution rounds
   rollback              Roll back to the last good release
+  reseed                Re-seed v001 from seed/ (after editing the genome; no rebuild)
   shell                 Open a shell inside the container (debug)
 
 Autonomous (no per-step approval; safe because Docker contains it):

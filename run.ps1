@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 
-foreach ($d in "data/runtime", "data/state", "data/workspace") {
+foreach ($d in "data/runtime", "data/state", "data/workspace", "data/local") {
     if (-not (Test-Path -LiteralPath $d)) {
         New-Item -ItemType Directory -Path $d -Force | Out-Null
     }
@@ -31,6 +31,14 @@ switch ($Command) {
     "build" { docker compose build }
     "status" { Invoke-Eva @("status") }
     "rollback" { Invoke-Eva @("rollback") }
+    "reseed" {
+        # Drop the materialized runtime so the next start re-seeds v001 from
+        # seed/ (mounted), without an image rebuild. State/workspace are kept.
+        if (Test-Path -LiteralPath "data/runtime") {
+            Remove-Item -Recurse -Force -LiteralPath "data/runtime"
+        }
+        Invoke-Eva @("status")
+    }
     "work" { Invoke-Eva (@("work") + $Rest) }
     "improve" { Invoke-Eva (@("improve") + $Rest) }
     "review" { Invoke-Eva (@("review") + $Rest) }
@@ -57,6 +65,7 @@ Usage: .\run.ps1 <command> [args]
   review  [task]        Read-only inspection
   evolve  [N] [flags]   Run N autonomous evolution rounds
   rollback              Roll back to the last good release
+  reseed                Re-seed v001 from seed/ (after editing the genome; no rebuild)
   shell                 Open a shell inside the container (debug)
 
 Autonomous (no per-step approval; safe because Docker contains it):

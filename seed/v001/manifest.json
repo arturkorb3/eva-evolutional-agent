@@ -1,0 +1,36 @@
+{
+  "name": "eva-layered-core",
+  "version": "v001",
+  "principle": "organism.py is the tiny non-evolving kernel. A release is a complete, layered bundle: provider-neutral core + model adapters + tool runtime + human/approval + session store, wired by agent.py and gated by supervisor.py/tests.py.",
+  "contains": [
+    "supervisor.py",
+    "agent.py",
+    "tests.py",
+    "core.py",
+    "adapters.py",
+    "tools.py",
+    "human.py",
+    "session.py",
+    "manifest.json"
+  ],
+  "layers": {
+    "core.py": "provider-neutral semantic model + turn loop",
+    "adapters.py": "ModelAdapter implementations (fake, openai_chat)",
+    "tools.py": "canonical tool schema + sandboxed runtime",
+    "human.py": "HumanInterface + ApprovalPolicy",
+    "session.py": "canonical append-only event log + compaction",
+    "agent.py": "wiring + CLI (work/improve/review/evolve)",
+    "supervisor.py": "release gates + promotion/pivot orchestration",
+    "tests.py": "LLM-free checks (ratchet)"
+  },
+  "hashes": {
+    "supervisor.py": "f5f7ab31c5b683d146d619df2a2d3ff94dbb5ad70bca68b4dead4aca745710f1",
+    "agent.py": "abe442c33878279a12ecc60c11ec6ad9f57e5a1c2830fe1905076082e6c7f9d8",
+    "tests.py": "3261e6bfcd8b22e1b72018d5126f421125c7e7e0d74b99bc1e6250a54c0bbb24",
+    "core.py": "f91723501f6236816f5f50979cc143bbfabfeef8bcebd434e676c40b23fe7cce",
+    "adapters.py": "51acc39370c539fa9e889da40b7343aa560f732536cb76c25bb994fbae750eac",
+    "tools.py": "7f8305c6662a3b8e951fab9e8347239a478a37df220cdc202dee08073b66b96b",
+    "human.py": "3b99c5ac9efe552fbb6149089dad39a7f957272d0b266b06f2afcbd1fec0bf6a",
+    "session.py": "df08bb62cab2aa3e1c7a418ae31b945d02847d8fa8b5f2882b5963899117f4f1"
+  }
+}

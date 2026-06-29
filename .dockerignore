@@ -1,3 +1,7 @@
-# Keep the build context tiny and secret-free: only the kernel enters the image.
+# Keep the build context tiny and secret-free: only the kernel + seed genome
+# enter the image.
 *
 !organism.py
+!seed
+!seed/**
+seed/**/__pycache__

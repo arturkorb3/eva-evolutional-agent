@@ -30,7 +30,7 @@ services:
           pids: 256 # contain fork bombs from the shell action
 
     tmpfs:
-      - /tmp:size=64m,mode=1777 # writable scratch space without touching the host
+      - /tmp:size=256m,mode=1777 # writable scratch space without touching the host
 
     # Allow reaching a model server running on the host (Ollama / LM Studio),
     # also on Linux. On Docker Desktop this name resolves automatically.
@@ -40,11 +40,27 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-      # LLM connection (OpenAI-compatible /chat/completions). Set these in .env.
-      LLM_ENDPOINT: "${LLM_ENDPOINT:-https://api.openai.com/v1/responses}"
+      # Writable, PERSISTENT HOME so EVA can extend its OWN runtime tooling inside
+      # the sandbox without any image change: `pip install --user <pkg>` and
+      # downloaded binaries land under ~/.local (= /eva/.local/.local -> ./data/local)
+      # and survive restarts. ~/.local/bin is on PATH.
+      HOME: "/eva/.local"
+      PATH: "/eva/.local/.local/bin:/eva/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      # Provider selection for EVA's ModelAdapter. Set these in .env.
+      EVA_PROVIDER: "${EVA_PROVIDER:-openai_chat}"
+      EVA_ENDPOINT: "${EVA_ENDPOINT:-}"
+      EVA_MODEL: "${EVA_MODEL:-}"
+      EVA_API_KEY: "${EVA_API_KEY:-}"
+      # Legacy fallbacks (used only if the EVA_* vars above are unset).
+      LLM_ENDPOINT: "${LLM_ENDPOINT:-}"
       LLM_MODEL: "${LLM_MODEL:-}"
       LLM_API_KEY: "${LLM_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      LLM_TIMEOUT: "${LLM_TIMEOUT:-}"
+      # Context budget + pivot threshold.
+      ORGANISM_HISTORY_BUDGET: "${ORGANISM_HISTORY_BUDGET:-}"
+      ORGANISM_HISTORY_KEEP: "${ORGANISM_HISTORY_KEEP:-}"
+      ORGANISM_PIVOT_THRESHOLD: "${ORGANISM_PIVOT_THRESHOLD:-}"
       # Optional autonomous mode. Only safe because this container contains it.
       ORGANISM_AUTO_YES: "${ORGANISM_AUTO_YES:-}"
       ORGANISM_ALLOW_SHELL: "${ORGANISM_ALLOW_SHELL:-}"
@@ -56,6 +72,13 @@ services:
       - ./data/runtime:/eva/runtime
       - ./data/state:/eva/state
       - ./data/workspace:/eva/workspace
+      # Writable HOME for runtime-installed tools/libs (pip --user, binaries) so
+      # EVA grows its own capabilities here without touching the image.
+      - ./data/local:/eva/.local
+      # Dev convenience: mount the seed read-only so genome edits take effect on a
+      # reseed WITHOUT rebuilding the image. The image still bakes seed/ as the
+      # distribution fallback (the mount just shadows it here).
+      - ./seed:/eva/seed:ro
 
     # Needed for interactive approval prompts and API-key entry.
     stdin_open: true

@@ -19,8 +19,9 @@
 EVA starts as a tiny, non-evolving kernel plus one seed release. Give it an API
 key and run it in one of three modes:
 
-- **`work`** — does useful work for you in `workspace/` with shell + file +
-  network tools. It can *report* on itself, but never rewrites its own code.
+- **`work`** — does useful work for you in `workspace/` with a shell-centric
+  toolset (read, search, write and run via shell; Node.js is available, plus
+  `ask_user` and `finish`). It can *report* on itself, but never rewrites its own code.
 - **`improve`** — **directed** self-change: you hand it a concrete task and it
   builds a *candidate* version of its own code that implements **exactly that**.
 - **`evolve`** — **autonomous** self-change: EVA chooses the improvement itself,
@@ -34,9 +35,12 @@ The whole point is that *the thing being improved and the thing doing the
 improving are the same organism* — but every change is a gated, reversible,
 test-ratcheted step, never live surgery on a running system.
 
-It stays small and provider-agnostic — EVA reads its own code with plain shell
-(`grep`/`sed`), talks to any OpenAI-compatible endpoint through one tiny text
-protocol, and keeps a budgeted, resumable session.
+It stays small and **provider-neutral**: the core speaks only to a swappable
+`ModelAdapter` (never to a provider directly). EVA reads its own code with plain
+shell (`grep`/`sed`), and an adapter translates EVA's own tool schema to the
+backend — today an OpenAI-compatible Chat endpoint via a portable JSON-text
+protocol, or an offline fake for tests — while a budgeted, crash-resumable
+session keeps long runs affordable.
 
 ## Why a seed, not a framework?
 
@@ -90,13 +94,22 @@ flowchart TD
 ```
 
 - **`organism.py`** is the only fixed part — a tiny kernel that seeds the first
-  release, runs the active one, enforces a final gate, and can roll back. It is
-  baked into the image and **never** mounted, so the agent cannot modify it.
-- **Releases** (`runtime/releases/vNNN/`) are the *evolving* organism: a complete
-  bundle of `supervisor.py`, `agent.py`, `tests.py`, and `manifest.json`. EVA
-  evolves these as whole versioned units.
+  release, runs the active one, enforces a final gate, renames a promoted
+  candidate to a clean version, and can roll back. The kernel **and the seed
+  genome** ([`seed/v001/`](seed/v001)) are baked into the image; the kernel is
+  never mounted, so the agent cannot modify it. On first start the kernel copies
+  `seed/v001/` into the runtime after verifying each file against the SHA-256
+  hashes pinned in its manifest.
+- **Releases** (`runtime/releases/vNNN/`) are the *evolving* organism — a
+  complete, **layered** bundle that EVA evolves as one versioned unit: a
+  provider-neutral core (`core.py`), model adapters (`adapters.py`), the tool
+  runtime (`tools.py`), human/approval (`human.py`), the session log
+  (`session.py`), the wiring/CLI (`agent.py`), and the gates (`supervisor.py` +
+  `tests.py`, with `manifest.json`).
 - A new version goes live only after passing the **supervisor gate** *and* the
-  **kernel gate**, then human approval (auto-approved only in autonomous mode).
+  **kernel gate**, then human approval (auto-approved only in autonomous mode);
+  the promoted candidate is then renamed to the next clean version
+  (`v001 → v002 → …`).
 - `CURRENT` and `LAST_GOOD` pointers make every promotion **reversible**.
 
 ## Why it's contained (not "safe")
@@ -110,6 +123,15 @@ hardened container ([`docker-compose.yml`](docker-compose.yml)):
 - CPU, memory and PID limits (contains runaways / fork bombs)
 - the kernel is baked into the image and not mounted — the agent can't touch it
 - secrets come from `.env` at runtime and are never baked into the image
+
+Within that box, EVA is **not** limited to reading: it has writable scratch
+(`/tmp`) and a **persistent writable HOME** (`/eva/.local` → `./data/local`), so it
+can extend its *own* runtime tooling **without any image change** — `pip install
+--user <pkg>`, downloaded static binaries on `PATH`, and HTTP via Python
+`urllib` or `node`'s global `fetch` (there is no `curl`/`wget`). What it **cannot**
+change is the image itself (the Dockerfile, system packages) and `organism.py` —
+those stay host-controlled. Self-modification reaches EVA's own Python releases,
+not the container.
 
 On top of the sandbox, three software guarantees constrain evolution itself:
 
@@ -128,15 +150,16 @@ On top of the sandbox, three software guarantees constrain evolution itself:
 ## How EVA improves itself
 
 Every work session feeds a persistent **friction backlog**
-(`data/state/backlog.jsonl`): failed shell commands, unknown/missing actions,
-LLM/protocol errors, crashes, and problems EVA flags itself (`note_problem`) —
-plus your thumbs-up/down at the end of a session. The backlog is the
-**fitness signal**: usefulness is *grown from real failures*, not designed up front.
+(`data/state/backlog.jsonl`): failed shell commands and model/transport errors are
+recorded as they happen. The backlog is the **fitness signal**: usefulness is
+*grown from real failures*, not designed up front. (Richer signals from the
+earlier prototype — self-flagged problems, end-of-session feedback, more friction
+kinds — are being migrated back onto the new layered core.)
 
 When the same friction recurs (default 3×, `ORGANISM_PIVOT_THRESHOLD`), EVA asks:
 
 ```
-Repeated friction: 'shell:python:exit=1' seen 3x.
+Repeated friction: 'shell:exit=1'.
 Pause work and pivot to an improve cycle to fix this? [y/N]
 ```
 
@@ -149,14 +172,14 @@ a *phase change*, not live self-modification.
 
 ```powershell
 # 1. configure your model
-Copy-Item .env.example .env      # then set LLM_API_KEY (and LLM_MODEL)
+Copy-Item .env.example .env      # set EVA_MODEL and EVA_API_KEY (EVA_PROVIDER=openai_chat)
 
 # 2. build the sandbox image
 .\run.ps1 build
 
 # 3. try it
 .\run.ps1 review                 # read-only: EVA inspects & explains itself
-.\run.ps1 work "research today's weather for Berlin"
+.\run.ps1 work                   # interactive; or: work "research the weather for Berlin"
 .\run.ps1 work resume            # continue an interrupted session
 .\run.ps1 improve "add a CHANGELOG and report it in work mode"   # directed self-change
 .\run.ps1 status                 # show active / last-good release
@@ -173,11 +196,13 @@ On Linux/macOS use `./run.sh` with the same commands.
 | `review [task]` | Read-only inspection — no writes, no evolution. |
 | `improve [task]` | **Directed** self-change — builds a gated candidate that implements *your* task (asks before each change). |
 | `evolve [N] [flags]` | **Autonomous** self-change — EVA picks the improvement itself and runs N rounds. |
-| `work resume` / `improve resume` | Continue an interrupted session — the conversation is persisted to disk after every step and survives a restart. |
+| `work resume` / `improve resume` | Continue your previous session — interactive sessions stay resumable after you leave (exit, crash, or quota), and each mode keeps its own. A fresh start overwrites it. |
 | `status` / `rollback` | Show pointers / revert to `LAST_GOOD`. |
+| `reseed` | Re-seed `v001` from `seed/` after editing the genome — no image rebuild (the seed is mounted for development). |
 
-`work`, `improve`, and `review` run as an **interactive chat** — after each turn
-you can type a follow-up; press Enter on an empty line (or type `exit`) to end.
+`work`, `improve`, and `review` run as an **interactive chat** — started without a
+task, EVA asks for your first message; after each turn you can type a follow-up;
+press Enter on an empty line (or type `exit`) to end.
 
 Run fully hands-off (tolerable **only** because Docker contains it):
 
@@ -187,7 +212,18 @@ Run fully hands-off (tolerable **only** because Docker contains it):
 
 ### Model providers
 
-Set the endpoint, model, and key in `.env`. Currently OpenAI-compatible models are supported (improve EVA to support more).
+EVA's core is provider-neutral; you pick the adapter explicitly in `.env` via
+`EVA_PROVIDER`:
+
+| `EVA_PROVIDER` | Backend |
+|---|---|
+| `openai_chat` (default) | Any OpenAI-compatible **Chat Completions** endpoint — OpenAI, Azure, Ollama, LM Studio, vLLM, OpenRouter. Tools use EVA's portable JSON-text protocol, so it works even without native function calling. |
+| `fake` | Offline, deterministic — for smoke tests / dry runs (no key). |
+
+Set `EVA_ENDPOINT`, `EVA_MODEL`, and `EVA_API_KEY` (legacy `LLM_*` /
+`OPENAI_API_KEY` still work as a fallback). A native **Responses API** adapter
+(native tool calls + server-side conversation state) is a planned next adapter.
+For maximum isolation, point `EVA_ENDPOINT` at a local model on the host.
 
 ## Inspecting & resetting
 
@@ -197,9 +233,9 @@ Everything EVA does is persisted on the host under `./data/` (git-ignored):
 - `data/runtime/releases/` — every release & candidate (its evolved source) + `CURRENT` / `LAST_GOOD`
 - `data/state/` — JSONL logs of agent actions, supervisor and kernel decisions, and the friction backlog
 
-Delete `data/` to wipe all evolution and start fresh — `status` re-seeds `v001`.
-The seed in `organism.py` is unchanged by evolution; new generations live only in
-`data/`.
+Delete `data/` (or run `reseed`) to wipe all evolution and start fresh — the
+kernel re-seeds `v001` from `seed/v001/`. The seed genome is the source of truth
+for `v001` and is unchanged by evolution; new generations live only in `data/`.
 
 ## Honest limitations
 
@@ -207,7 +243,8 @@ This is an experimental research project, not production software.
 
 - The qualification gates check structure/behavior, but don't yet exercise full
   live LLM/tool flows.
-- The ratchet counts test functions; it can't see a test *body* being weakened.
+- The ratchet counts test *functions* in source; it can't tell a test body was
+  weakened, or that an added test never actually runs.
 - Rollback is single-level (`LAST_GOOD`), not a full history stack.
 - Context summarization is deterministic and rudimentary, and only one session is
   kept at a time.
@@ -216,10 +253,20 @@ This is an experimental research project, not production software.
 ## Repository layout
 
 ```
-organism.py          the tiny immutable kernel (carries the v001 seed)
-Dockerfile           hardened, non-root, stdlib-only image
+organism.py          the tiny immutable kernel (seeds, gates, promotes, rolls back)
+seed/v001/           the initial genome (layered, hash-pinned), baked into the image
+  core.py              provider-neutral semantic model + turn loop
+  adapters.py          model adapters (fake, openai_chat)
+  tools.py             canonical tools + sandboxed runtime
+  human.py             HumanInterface + ApprovalPolicy
+  session.py           append-only event log + compaction
+  agent.py             wiring + CLI (work/improve/review/evolve)
+  supervisor.py        release gates + promotion/pivot
+  tests.py             LLM-free checks (the ratchet)
+  manifest.json        file list + SHA-256 integrity hashes
+Dockerfile           hardened, non-root image (kernel + seed + Node.js)
 docker-compose.yml   the sandbox: read-only fs, caps dropped, resource limits
-run.ps1 / run.sh     convenience wrappers
+run.ps1 / run.sh     convenience wrappers (build/status/work/improve/review/evolve/reseed/rollback)
 .env.example         model configuration template
 data/                created at runtime; all evolution lives here (git-ignored)
 ```
