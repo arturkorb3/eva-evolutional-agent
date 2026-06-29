@@ -11,13 +11,15 @@
 > sandbox** — never directly on your host, and never against systems or data you
 > care about. You are responsible for what it does with your API key and network.
 
-> A small, **architecture-agnostic micro agentic runtime** — a learning
-> playground for self-improving agents. It boots from almost nothing, then
-> rewrites, tests, and promotes **better versions of itself**, inside a hardened
-> Docker sandbox that contains the damage rather than preventing it.
+> EVA is a small, self-evolving coding agent. A tiny immutable kernel boots a
+> single seed release; from there EVA can rewrite, test, and promote new versions
+> of itself inside a hardened Docker sandbox. The principle is the point: keep the
+> core minimal, let capabilities grow only when real use demands them, and make
+> every self-change a gated, reversible step — never live surgery on a running
+> system.
 
-EVA starts as a tiny, non-evolving kernel plus one seed release. Give it an API
-key and run it in one of three modes:
+EVA starts as a tiny, non-evolving kernel plus one seed release, then grows from
+there. Give it an API key and run it in one of its modes:
 
 - **`work`** — does useful work for you in `workspace/` with a shell-centric
   toolset (read, search, write and run via shell; Node.js is available, plus
@@ -26,6 +28,8 @@ key and run it in one of three modes:
   builds a *candidate* version of its own code that implements **exactly that**.
 - **`evolve`** — **autonomous** self-change: EVA chooses the improvement itself,
   typically fixing the friction it has hit most often.
+- **`review`** — read-only inspection: EVA explains the workspace or its own
+  release without changing anything.
 
 Self-modification is locked to `improve` and `evolve`; `work` can never touch the
 release. Both produce a *candidate* that must clear layered gates before — with
@@ -50,12 +54,12 @@ extended by people. A full-featured harness like **OpenClaw** sits at the
 polished, batteries-included end of that spectrum: powerful and highly
 extensible.
 
-EVA is the opposite bet, and it is unapologetically a **research experiment,
-built from scratch**:
+EVA takes the opposite bet — it **grows from a seed**. It is still a research
+experiment you must keep sandboxed, but it is no longer minimal:
 
-- **Micro, not mega.** The whole runtime — the agent loop, the tools, the safety
-  scaffolding — is a handful of small files you can read in one sitting. Almost
-  nothing is baked in.
+- **A seed, not a framework.** The kernel stays tiny and immutable; everything
+  that grows lives in small, versioned releases you can read in one sitting and
+  EVA can rewrite. The capabilities it has today were grown, not hand-assembled.
 - **Grown, not assembled.** Capabilities aren't pre-installed; they **emerge**
   when the agent hits real friction and evolves a fix — added the moment a real
   failure demands it, not planned up front.
