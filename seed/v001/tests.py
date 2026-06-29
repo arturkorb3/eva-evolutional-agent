@@ -325,6 +325,35 @@ def check_write_file_tool():
         assert "Denied" in w("../organism.py", "x", "improve").output
 
 
+def check_image_attachments_provider_neutral():
+    with tempfile.TemporaryDirectory() as d:
+        ws = pathlib.Path(d)
+        (ws / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        # a local image path -> data-url image; the token becomes a placeholder
+        text, imgs = human_mod.extract_image_attachments("look at shot.png", base_dir=ws)
+        assert len(imgs) == 1 and imgs[0]["url"].startswith("data:image/png;base64,")
+        assert "shot.png" not in text
+        # Markdown image form
+        _, imgs_md = human_mod.extract_image_attachments("see ![x](shot.png)", base_dir=ws)
+        assert len(imgs_md) == 1
+        # a pasted data URL passes through unchanged
+        durl = "data:image/png;base64,QUJD"
+        _, imgs_d = human_mod.extract_image_attachments(durl, base_dir=ws)
+        assert imgs_d == [{"url": durl}]
+        # /paste resolves the newest staged clip-*.png
+        (ws / "clip-20200101-000000.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        _, imgs_p = human_mod.extract_image_attachments("/paste what is this?", base_dir=ws)
+        assert len(imgs_p) == 1
+        # ONLY the adapter maps neutral images to OpenAI image_url parts
+        ev = core.Event(role="user", content="hi", images=[{"url": durl}])
+        a = adapters.OpenAIChatAdapter(endpoint="x", model="m", api_key="k",
+                                       transport=lambda *_: {"choices": [{"message": {"content": "ok"}}]})
+        parts = a._user_content(ev)
+        assert isinstance(parts, list)
+        assert parts[0]["type"] == "text" and parts[1]["type"] == "image_url"
+        assert parts[1]["image_url"]["url"] == durl
+
+
 def check_capability_floor_concepts():
     # Constitutional capabilities must stay visible in the wiring layer.
     agent = _release_text("agent.py").lower()

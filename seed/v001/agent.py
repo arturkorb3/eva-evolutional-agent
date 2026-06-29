@@ -22,7 +22,8 @@ import time
 
 from core import Event, run_agent_loop
 from adapters import make_adapter, FakeAdapter, llm_error_signature
-from human import ApprovalPolicy, AutoHumanInterface, CliHumanInterface
+from human import (ApprovalPolicy, AutoHumanInterface, CliHumanInterface,
+                   extract_image_attachments)
 from session import SessionStore
 from tools import CANONICAL_TOOLS, EVOLUTION_TOOLS, ASK_USER_TOOL, FINISH_TOOL_DEF, ShellToolRuntime
 
@@ -325,9 +326,11 @@ def run_mode(mode: str, task: str):
             f"{ENV_CAPABILITIES}\n\n"
             f"Friction backlog (repeat counts):\n{backlog_summary()}"
         )
+        task_text, task_images = extract_image_attachments(task, WORKSPACE)
         session.seed([
             Event(role="system", content=system),
-            Event(role="user", content=task + "\n\n" + context),
+            Event(role="user", content=task_text + "\n\n" + context,
+                  images=task_images),
         ], mode)
 
     if interactive:
@@ -378,7 +381,8 @@ def run_mode(mode: str, task: str):
             reply = ""
         if not reply or reply.lower() in {"exit", "quit", "q", "bye"}:
             break
-        session.append(Event(role="user", content=reply))
+        reply_text, reply_images = extract_image_attachments(reply, WORKSPACE)
+        session.append(Event(role="user", content=reply_text, images=reply_images))
 
     # Interactive sessions stay resumable when you leave, so `<mode> resume`
     # continues the conversation even if the agent called `finish` for a turn.

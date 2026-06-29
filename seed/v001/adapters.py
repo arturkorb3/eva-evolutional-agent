@@ -181,6 +181,23 @@ class OpenAIChatAdapter:
         self._transport = transport or _http_post_json
         self._step = 0
 
+    # -- shared: render a user event (text, or multimodal with images) ----- #
+    def _user_content(self, ev):
+        """Render a user event as text, or as multimodal content parts when it
+        carries image attachments. Images are stored provider-neutrally as
+        {"url": "data:..."} dicts; HERE (and only here) they become OpenAI
+        image_url parts - the core stays provider-neutral."""
+        images = [img for img in (ev.images or [])
+                  if isinstance(img, dict) and img.get("url")]
+        if not images:
+            return ev.content
+        parts = []
+        if ev.content:
+            parts.append({"type": "text", "text": ev.content})
+        for img in images:
+            parts.append({"type": "image_url", "image_url": {"url": img["url"]}})
+        return parts
+
     # -- JSON-text protocol mode (portable fallback) ----------------------- #
     def _render_messages(self, turn: AgentTurn) -> list[dict]:
         system = turn.system + "\n\n" + render_tool_protocol(turn.tools)
@@ -189,7 +206,7 @@ class OpenAIChatAdapter:
             if ev.role == "system":
                 continue
             if ev.role == "user":
-                messages.append({"role": "user", "content": ev.content})
+                messages.append({"role": "user", "content": self._user_content(ev)})
             elif ev.role == "assistant":
                 if ev.tool_calls:
                     c = ev.tool_calls[0]
@@ -216,7 +233,7 @@ class OpenAIChatAdapter:
             if ev.role == "system":
                 continue
             if ev.role == "user":
-                messages.append({"role": "user", "content": ev.content})
+                messages.append({"role": "user", "content": self._user_content(ev)})
             elif ev.role == "assistant":
                 kept = [c for c in ev.tool_calls if c.id in result_ids]
                 if kept:

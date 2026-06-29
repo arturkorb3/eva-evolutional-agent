@@ -204,6 +204,20 @@ On Linux/macOS use `./run.sh` with the same commands.
 task, EVA asks for your first message; after each turn you can type a follow-up;
 press Enter on an empty line (or type `exit`) to end.
 
+### Images & screenshots
+
+With a vision-capable model, EVA can read images you attach to a message. In a
+chat message you can:
+- reference a local image path or Markdown `![](shot.png)` (put the file under
+  `data/workspace/`), or
+- type `/paste` to attach your **latest screenshot**.
+
+On Windows, `run.ps1 work` / `improve` starts a clipboard watcher that auto-stages
+any screenshot (`Win+Shift+S`) into `data/workspace/`, so **`Win+Shift+S` → `/paste`**
+just works. You can also stage on demand with `run.ps1 paste`, or disable the
+watcher with `$env:EVA_NO_CLIP_WATCH=1`. Images are stored provider-neutrally as
+data URLs in the event log; only the adapter renders them to a provider's format.
+
 Run fully hands-off (tolerable **only** because Docker contains it):
 
 ```powershell

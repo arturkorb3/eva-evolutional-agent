@@ -65,6 +65,8 @@ class Event:
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_call_id: str | None = None
     name: str | None = None
+    # Provider-neutral image attachments: {"url": "data:<mime>;base64,..."} dicts.
+    images: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +78,7 @@ class Event:
             ],
             "tool_call_id": self.tool_call_id,
             "name": self.name,
+            "images": list(self.images or []),
         }
 
     @classmethod
@@ -90,6 +93,7 @@ class Event:
             ],
             tool_call_id=d.get("tool_call_id"),
             name=d.get("name"),
+            images=d.get("images") or [],
         )
 
 

@@ -27,6 +27,50 @@ function Invoke-Eva {
     docker compose run --rm eva @EvaArgs
 }
 
+function Start-ClipboardWatcher {
+    # Seamless paste: while a session runs, watch the host clipboard and auto-stage
+    # any NEW screenshot into data/workspace/ as clip-<timestamp>.png. Inside the
+    # chat, `/paste` then attaches the most recent one. The container never touches
+    # the clipboard - only this host helper does. Disable with $env:EVA_NO_CLIP_WATCH=1.
+    if ($env:EVA_NO_CLIP_WATCH -eq "1") { return $null }
+    $env:EVA_CLIP_DIR = (Resolve-Path "data/workspace").Path
+    $loop = @'
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$dir = $env:EVA_CLIP_DIR
+$last = ''
+while ($true) {
+    try {
+        if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
+            $img = [System.Windows.Forms.Clipboard]::GetImage()
+            if ($null -ne $img) {
+                $ms = New-Object System.IO.MemoryStream
+                $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+                $bytes = $ms.ToArray(); $ms.Dispose()
+                $h = [BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes))
+                if ($h -ne $last) {
+                    $last = $h
+                    $name = 'clip-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.png'
+                    [System.IO.File]::WriteAllBytes((Join-Path $dir $name), $bytes)
+                }
+            }
+        }
+    } catch {}
+    Start-Sleep -Milliseconds 800
+}
+'@
+    $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($loop))
+    $p = Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -PassThru `
+        -ArgumentList @("-NoProfile", "-STA", "-WindowStyle", "Hidden", "-EncodedCommand", $enc)
+    Write-Host "(clipboard watch on: screenshots auto-stage to data/workspace; type /paste in chat to attach the latest)"
+    return $p
+}
+
+function Stop-ClipboardWatcher {
+    param($Proc)
+    if ($Proc -and -not $Proc.HasExited) { try { $Proc.Kill() } catch {} }
+    Remove-Item Env:EVA_CLIP_DIR -ErrorAction SilentlyContinue
+}
+
 switch ($Command) {
     "build" { docker compose build }
     "status" { Invoke-Eva @("status") }
@@ -39,8 +83,14 @@ switch ($Command) {
         }
         Invoke-Eva @("status")
     }
-    "work" { Invoke-Eva (@("work") + $Rest) }
-    "improve" { Invoke-Eva (@("improve") + $Rest) }
+    "work" {
+        $w = Start-ClipboardWatcher
+        try { Invoke-Eva (@("work") + $Rest) } finally { Stop-ClipboardWatcher $w }
+    }
+    "improve" {
+        $w = Start-ClipboardWatcher
+        try { Invoke-Eva (@("improve") + $Rest) } finally { Stop-ClipboardWatcher $w }
+    }
     "review" { Invoke-Eva (@("review") + $Rest) }
     "paste" {
         # Bridge the host clipboard into the sandbox: save a clipboard screenshot
