@@ -65,6 +65,18 @@ def render_tool_protocol(tools: list[Tool]) -> str:
     return "\n".join(lines)
 
 
+def render_native_tools(tools: list[Tool]) -> list[dict]:
+    """Render the canonical tools as OpenAI native function tools."""
+    return [{
+        "type": "function",
+        "function": {
+            "name": t.name,
+            "description": t.description,
+            "parameters": t.input_schema,
+        },
+    } for t in tools]
+
+
 def parse_json_object(text: str) -> dict:
     """Hardened single-object JSON extraction: tolerate code fences, prose around
     the object, and stray trailing braces. Raises ValueError if nothing parses."""
@@ -149,14 +161,19 @@ class OpenAIChatAdapter:
     source of truth); provider-side conversation state is a future optimisation,
     not a dependency.
     """
-    supports_native_tools = False
+    supports_native_tools = True
 
     def __init__(self, *, endpoint: str, model: str, api_key: str,
+                 tool_mode: str = "native",
                  temperature: "float | None" = None, timeout: int | None = None,
                  transport: "Callable[[str, dict, dict], dict] | None" = None):
         self.endpoint = endpoint
         self.model = model
         self.api_key = api_key
+        # native = OpenAI function/tool calling (reliable; models are trained for
+        # it). json_text = the portable protocol fallback for backends without it.
+        self.tool_mode = (tool_mode or "native").strip().lower()
+        self.supports_native_tools = self.tool_mode == "native"
         # temperature is opt-in: several current models reject a non-default value
         # with HTTP 400, so we only send it when explicitly configured.
         self.temperature = temperature
@@ -164,6 +181,7 @@ class OpenAIChatAdapter:
         self._transport = transport or _http_post_json
         self._step = 0
 
+    # -- JSON-text protocol mode (portable fallback) ----------------------- #
     def _render_messages(self, turn: AgentTurn) -> list[dict]:
         system = turn.system + "\n\n" + render_tool_protocol(turn.tools)
         messages = [{"role": "system", "content": system}]
@@ -186,18 +204,87 @@ class OpenAIChatAdapter:
                                  "content": f"OBSERVATION ({label}):\n{ev.content}"})
         return messages
 
+    # -- native tool-calling mode ------------------------------------------ #
+    def _render_messages_native(self, turn: AgentTurn) -> list[dict]:
+        evs = turn.events
+        # tool_call ids that actually have a tool result in this window
+        result_ids = {ev.tool_call_id for ev in evs
+                      if ev.role == "tool" and ev.tool_call_id}
+        answered: set = set()
+        messages = [{"role": "system", "content": turn.system}]
+        for ev in evs:
+            if ev.role == "system":
+                continue
+            if ev.role == "user":
+                messages.append({"role": "user", "content": ev.content})
+            elif ev.role == "assistant":
+                kept = [c for c in ev.tool_calls if c.id in result_ids]
+                if kept:
+                    messages.append({
+                        "role": "assistant",
+                        "content": ev.content or None,
+                        "tool_calls": [{
+                            "id": c.id, "type": "function",
+                            "function": {"name": c.name,
+                                         "arguments": json.dumps(c.arguments, ensure_ascii=False)},
+                        } for c in kept],
+                    })
+                    answered.update(c.id for c in kept)
+                else:
+                    messages.append({"role": "assistant", "content": ev.content or ""})
+            elif ev.role == "tool":
+                # Only emit a tool message paired with an assistant tool_call we kept;
+                # otherwise (e.g. compaction split the pair) downgrade to user text so
+                # the request stays valid for the API.
+                if ev.tool_call_id in answered:
+                    messages.append({"role": "tool", "tool_call_id": ev.tool_call_id,
+                                     "content": ev.content})
+                else:
+                    label = ev.name or "tool"
+                    messages.append({"role": "user",
+                                     "content": f"OBSERVATION ({label}):\n{ev.content}"})
+        return messages
+
     def run_turn(self, turn: AgentTurn) -> ModelResult:
         self._step += 1
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.tool_mode == "native":
+            body = {
+                "model": self.model,
+                "messages": self._render_messages_native(turn),
+                "tools": render_native_tools(turn.tools),
+                "tool_choice": "auto",
+            }
+            if self.temperature is not None:
+                body["temperature"] = self.temperature
+            data = self._transport(self.endpoint, body, headers)
+            msg = data["choices"][0]["message"]
+            say = msg.get("content") or ""
+            calls = []
+            for tc in (msg.get("tool_calls") or []):
+                fn = tc.get("function", {}) or {}
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except Exception:
+                    args = {}
+                if not isinstance(args, dict):
+                    args = {}
+                calls.append(ToolCall(id=tc.get("id") or f"c{self._step}",
+                                      name=fn.get("name", ""), arguments=args))
+            if calls:
+                return ModelResult(say=say, tool_calls=calls)
+            return ModelResult(say=say, final=True)
+
+        # json_text fallback
         body = {
             "model": self.model,
             "messages": self._render_messages(turn),
         }
         if self.temperature is not None:
             body["temperature"] = self.temperature
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
         data = self._transport(self.endpoint, body, headers)
         text = data["choices"][0]["message"]["content"]
         obj = parse_json_object(text)
@@ -254,8 +341,9 @@ def make_adapter(env: "dict[str, str] | None" = None):
             temperature = float(temp_raw) if temp_raw else None
         except ValueError:
             temperature = None
+        tool_mode = (env.get("EVA_TOOL_MODE") or "native").strip().lower()
         return OpenAIChatAdapter(endpoint=endpoint, model=model, api_key=key,
-                                 temperature=temperature)
+                                 tool_mode=tool_mode, temperature=temperature)
 
     raise SystemExit(f"Unknown EVA_PROVIDER: {provider!r}")
 

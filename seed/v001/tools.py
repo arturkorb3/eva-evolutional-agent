@@ -19,7 +19,8 @@ import subprocess
 import time
 
 from core import Tool, ToolCall, ToolObservation
-from human import ApprovalPolicy, HumanInterface, RISK_NONE, RISK_PROMOTE, RISK_SHELL
+from human import (ApprovalPolicy, HumanInterface, RISK_NONE, RISK_PROMOTE,
+                   RISK_SHELL, RISK_WRITE)
 
 
 # --------------------------------------------------------------------------- #
@@ -61,6 +62,56 @@ FINISH_TOOL_DEF = Tool(
     },
 )
 
+WRITE_FILE_TOOL = Tool(
+    name="write_file",
+    description="Write a file with its FULL content - the reliable way to edit code. "
+                "Prefer this over shell heredocs/sed for any multi-line change. In "
+                "work mode it writes into the workspace; in improve/evolve it can "
+                "also write into a *-candidate release (e.g. "
+                "../runtime/releases/v002-candidate/adapters.py). It can NOT touch the "
+                "active release, state/, or the kernel.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "content": {"type": "string"},
+        },
+        "required": ["path", "content"],
+    },
+)
+
+READ_FILE_TOOL = Tool(
+    name="read_file",
+    description="Read a file's full text (your own code under ../runtime/releases/, "
+                "workspace files, or the kernel). Use this to SEE current content "
+                "before editing - never ask the user for file contents.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "max_chars": {"type": "integer"},
+        },
+        "required": ["path"],
+    },
+)
+
+REPLACE_IN_FILE_TOOL = Tool(
+    name="replace_in_file",
+    description="Surgically replace an exact text block in a file (old -> new). The "
+                "old text must occur EXACTLY ONCE - include enough surrounding lines "
+                "to be unique. Best for editing existing code; same write permissions "
+                "as write_file.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "old": {"type": "string"},
+            "new": {"type": "string"},
+        },
+        "required": ["path", "old", "new"],
+    },
+)
+
 REQUEST_PROMOTION_TOOL = Tool(
     name="request_promotion",
     description="Ask EVA's supervisor + kernel to gate and (if it passes) promote a "
@@ -77,7 +128,8 @@ REQUEST_PROMOTION_TOOL = Tool(
     },
 )
 
-CANONICAL_TOOLS: list[Tool] = [SHELL_TOOL, ASK_USER_TOOL, FINISH_TOOL_DEF]
+CANONICAL_TOOLS: list[Tool] = [SHELL_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL,
+                              REPLACE_IN_FILE_TOOL, ASK_USER_TOOL, FINISH_TOOL_DEF]
 # Extra tool available only when the agent is allowed to evolve the release.
 EVOLUTION_TOOLS: list[Tool] = CANONICAL_TOOLS + [REQUEST_PROMOTION_TOOL]
 
@@ -158,6 +210,15 @@ class ShellToolRuntime:
         if call.name == "shell":
             return self._run_shell(call, mode)
 
+        if call.name == "read_file":
+            return self._read_file(call)
+
+        if call.name == "write_file":
+            return self._write_file(call, mode)
+
+        if call.name == "replace_in_file":
+            return self._replace_in_file(call, mode)
+
         if call.name == "request_promotion":
             return self._request_promotion(call, mode)
 
@@ -193,6 +254,105 @@ class ShellToolRuntime:
                f"stdout:\n{r.stdout[-self.max_output:]}\n"
                f"stderr:\n{r.stderr[-self.max_output:]}")
         return ToolObservation(call.id, call.name, out)
+
+    def _resolve_write_target(self, path: str, mode: str):
+        """Resolve a write target and enforce where each mode may write. Returns
+        (resolved_path, None) when allowed, else (None, denial_message)."""
+        if mode == "review":
+            return None, "Denied: review mode is read-only."
+        raw = str(path or "").strip()
+        if not raw:
+            return None, "Denied: empty path."
+        target = (self.workspace / raw).resolve()
+        ws = self.workspace.resolve()
+        if target == ws or str(target).startswith(str(ws) + os.sep):
+            return target, None
+        if self.releases is not None:
+            rel = self.releases.resolve()
+            if str(target).startswith(str(rel) + os.sep):
+                if mode not in ("improve", "evolve"):
+                    return None, "Denied: release writes only in improve/evolve mode."
+                release_dir = target.relative_to(rel).parts[0]
+                if not release_dir.endswith("-candidate"):
+                    return None, ("Denied: may only write inside a *-candidate release, "
+                                  "never the active or other releases.")
+                return target, None
+        return None, "Denied: path is outside the workspace and any candidate release."
+
+    def _write_file(self, call: ToolCall, mode: str) -> ToolObservation:
+        target, err = self._resolve_write_target(call.arguments.get("path", ""), mode)
+        if err:
+            return ToolObservation(call.id, call.name, err)
+        content = call.arguments.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        print("\nWRITE file:", target)
+        if not self.approval.approve(RISK_WRITE, "Approve file write?"):
+            return ToolObservation(call.id, call.name, "File write rejected.")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        if target.suffix == ".py":
+            try:
+                target.chmod(0o755)
+            except Exception:
+                pass
+        return ToolObservation(call.id, call.name,
+                               f"Wrote {len(content)} chars to {target}")
+
+    def _read_file(self, call: ToolCall) -> ToolObservation:
+        raw = str(call.arguments.get("path", "")).strip()
+        if not raw:
+            return ToolObservation(call.id, call.name, "Denied: empty path.")
+        target = (self.workspace / raw).resolve()
+        root = self.workspace.parent.resolve()
+        if not (target == root or str(target).startswith(str(root) + os.sep)):
+            return ToolObservation(call.id, call.name,
+                                   "Denied: path is outside the project.")
+        if not target.is_file():
+            return ToolObservation(call.id, call.name, f"Not a file: {target}")
+        try:
+            max_chars = int(call.arguments.get("max_chars", 20000))
+        except (TypeError, ValueError):
+            max_chars = 20000
+        text = target.read_text(encoding="utf-8", errors="replace")
+        if len(text) <= max_chars:
+            return ToolObservation(call.id, call.name, text)
+        return ToolObservation(call.id, call.name,
+                               text[:max_chars] +
+                               f"\n...[truncated {len(text) - max_chars} chars; raise max_chars]")
+
+    def _replace_in_file(self, call: ToolCall, mode: str) -> ToolObservation:
+        target, err = self._resolve_write_target(call.arguments.get("path", ""), mode)
+        if err:
+            return ToolObservation(call.id, call.name, err)
+        if not target.is_file():
+            return ToolObservation(call.id, call.name,
+                                   f"Denied: file does not exist: {target}")
+        old = call.arguments.get("old", "")
+        new = call.arguments.get("new", "")
+        if not isinstance(old, str) or not old:
+            return ToolObservation(call.id, call.name,
+                                   "Denied: 'old' must be a non-empty string.")
+        if not isinstance(new, str):
+            new = str(new)
+        text = target.read_text(encoding="utf-8", errors="replace")
+        n = text.count(old)
+        if n == 0:
+            return ToolObservation(call.id, call.name, "No match: 'old' text not found.")
+        if n > 1:
+            return ToolObservation(call.id, call.name,
+                                   f"Ambiguous: 'old' occurs {n} times; add more "
+                                   "surrounding context to make it unique.")
+        print("\nEDIT file:", target)
+        if not self.approval.approve(RISK_WRITE, "Approve file edit?"):
+            return ToolObservation(call.id, call.name, "File edit rejected.")
+        target.write_text(text.replace(old, new, 1), encoding="utf-8")
+        if target.suffix == ".py":
+            try:
+                target.chmod(0o755)
+            except Exception:
+                pass
+        return ToolObservation(call.id, call.name, f"Replaced 1 occurrence in {target}")
 
     def _request_promotion(self, call: ToolCall, mode: str) -> ToolObservation:
         if mode not in ("improve", "evolve"):

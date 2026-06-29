@@ -42,6 +42,49 @@ switch ($Command) {
     "work" { Invoke-Eva (@("work") + $Rest) }
     "improve" { Invoke-Eva (@("improve") + $Rest) }
     "review" { Invoke-Eva (@("review") + $Rest) }
+    "paste" {
+        # Bridge the host clipboard into the sandbox: save a clipboard screenshot
+        # into data/workspace/ so you can reference it in a chat message. The
+        # container cannot read the host clipboard and terminals accept only text,
+        # so this host-side step stages the image as a file. Clipboard image access
+        # needs an STA thread + several formats, so we shell out to powershell.exe -STA.
+        New-Item -ItemType Directory -Path "data/workspace" -Force | Out-Null
+        $name = "clip-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".png"
+        $env:EVA_PASTE_OUT = Join-Path (Resolve-Path "data/workspace").Path $name
+        $inner = @'
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$out = $env:EVA_PASTE_OUT
+$img = $null
+if ([System.Windows.Forms.Clipboard]::ContainsImage()) { $img = [System.Windows.Forms.Clipboard]::GetImage() }
+if ($null -eq $img) {
+    $ido = [System.Windows.Forms.Clipboard]::GetDataObject()
+    foreach ($fmt in @('PNG', 'image/png')) {
+        if ($ido -and $ido.GetDataPresent($fmt)) {
+            $s = $ido.GetData($fmt)
+            if ($s -is [System.IO.Stream]) { $img = [System.Drawing.Image]::FromStream($s); break }
+        }
+    }
+}
+if ($null -eq $img -and [System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
+    foreach ($f in [System.Windows.Forms.Clipboard]::GetFileDropList()) {
+        if ($f -match '\.(png|jpg|jpeg|gif|webp|bmp)$') { $img = [System.Drawing.Image]::FromFile($f); break }
+    }
+}
+if ($null -eq $img) { Write-Output 'NOIMAGE'; exit 1 }
+$img.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
+Write-Output 'OK'
+'@
+        $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($inner))
+        $res = & powershell.exe -NoProfile -STA -EncodedCommand $enc 2>$null
+        Remove-Item Env:EVA_PASTE_OUT -ErrorAction SilentlyContinue
+        if ($res -match 'OK') {
+            Write-Host "Saved clipboard image -> data/workspace/$name"
+            Write-Host ("Reference it in your next message, e.g.:  ![]({0})   or simply:  {0}" -f $name)
+        }
+        else {
+            Write-Warning "No usable image found in the clipboard. Take a screenshot (Win+Shift+S), then run: .\run.ps1 paste"
+        }
+    }
     "evolve" {
         $rounds = "1"
         $extra = @($Rest)
@@ -63,6 +106,7 @@ Usage: .\run.ps1 <command> [args]
   work    [task]        Useful work in workspace/ (default mode)
   improve [task]        Evolve a candidate release
   review  [task]        Read-only inspection
+  paste                 Save a clipboard screenshot into data/workspace/ to attach in chat
   evolve  [N] [flags]   Run N autonomous evolution rounds
   rollback              Roll back to the last good release
   reseed                Re-seed v001 from seed/ (after editing the genome; no rebuild)

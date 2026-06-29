@@ -38,9 +38,9 @@ test-ratcheted step, never live surgery on a running system.
 It stays small and **provider-neutral**: the core speaks only to a swappable
 `ModelAdapter` (never to a provider directly). EVA reads its own code with plain
 shell (`grep`/`sed`), and an adapter translates EVA's own tool schema to the
-backend — today an OpenAI-compatible Chat endpoint via a portable JSON-text
-protocol, or an offline fake for tests — while a budgeted, crash-resumable
-session keeps long runs affordable.
+backend — today an OpenAI-compatible Chat endpoint with native tool calling (or a
+portable JSON-text fallback), or an offline fake for tests — while a budgeted,
+crash-resumable session keeps long runs affordable.
 
 ## Why a seed, not a framework?
 
@@ -217,13 +217,14 @@ EVA's core is provider-neutral; you pick the adapter explicitly in `.env` via
 
 | `EVA_PROVIDER` | Backend |
 |---|---|
-| `openai_chat` (default) | Any OpenAI-compatible **Chat Completions** endpoint — OpenAI, Azure, Ollama, LM Studio, vLLM, OpenRouter. Tools use EVA's portable JSON-text protocol, so it works even without native function calling. |
+| `openai_chat` (default) | Any OpenAI-compatible **Chat Completions** endpoint — OpenAI, Azure, Ollama, LM Studio, vLLM, OpenRouter. |
 | `fake` | Offline, deterministic — for smoke tests / dry runs (no key). |
 
 Set `EVA_ENDPOINT`, `EVA_MODEL`, and `EVA_API_KEY` (legacy `LLM_*` /
-`OPENAI_API_KEY` still work as a fallback). A native **Responses API** adapter
-(native tool calls + server-side conversation state) is a planned next adapter.
-For maximum isolation, point `EVA_ENDPOINT` at a local model on the host.
+`OPENAI_API_KEY` still work as a fallback). `EVA_TOOL_MODE` selects how tools are
+called: `native` (OpenAI function/tool calling — reliable, the default) or
+`json_text` (a portable protocol for backends without native tools). For maximum
+isolation, point `EVA_ENDPOINT` at a local model on the host.
 
 ## Inspecting & resetting
 

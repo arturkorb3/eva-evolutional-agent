@@ -51,6 +51,8 @@ services:
       EVA_ENDPOINT: "${EVA_ENDPOINT:-}"
       EVA_MODEL: "${EVA_MODEL:-}"
       EVA_API_KEY: "${EVA_API_KEY:-}"
+      EVA_TOOL_MODE: "${EVA_TOOL_MODE:-native}"
+      EVA_TEMPERATURE: "${EVA_TEMPERATURE:-}"
       # Legacy fallbacks (used only if the EVA_* vars above are unset).
       LLM_ENDPOINT: "${LLM_ENDPOINT:-}"
       LLM_MODEL: "${LLM_MODEL:-}"

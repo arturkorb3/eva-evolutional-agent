@@ -134,7 +134,8 @@ def check_chat_adapter_with_fake_transport():
             "content": '{"say":"running","tool":"shell","arguments":{"cmd":"pwd"}}'}}]}
 
     a = adapters.OpenAIChatAdapter(endpoint="http://x/v1/chat/completions",
-                                   model="m", api_key="k", transport=transport)
+                                   model="m", api_key="k", tool_mode="json_text",
+                                   transport=transport)
     turn = core.AgentTurn(system="sys",
                           events=[core.Event(role="user", content="hi")],
                           tools=tools_mod.CANONICAL_TOOLS, mode="work")
@@ -143,6 +144,55 @@ def check_chat_adapter_with_fake_transport():
     # tools were rendered into the system message (portable protocol).
     sys_msg = captured["body"]["messages"][0]["content"]
     assert "TOOL PROTOCOL" in sys_msg and "shell" in sys_msg
+
+
+def check_chat_adapter_native_tool_calls():
+    captured = {}
+
+    def transport(endpoint, body, headers):
+        captured["body"] = body
+        return {"choices": [{"message": {"content": "running", "tool_calls": [
+            {"id": "call_1", "type": "function",
+             "function": {"name": "shell", "arguments": '{"cmd":"pwd"}'}}]}}]}
+
+    a = adapters.OpenAIChatAdapter(endpoint="http://x/v1/chat/completions",
+                                   model="m", api_key="k", tool_mode="native",
+                                   transport=transport)
+    assert a.supports_native_tools is True
+    turn = core.AgentTurn(system="sys",
+                          events=[core.Event(role="user", content="hi")],
+                          tools=tools_mod.CANONICAL_TOOLS, mode="work")
+    res = a.run_turn(turn)
+    assert res.tool_calls and res.tool_calls[0].name == "shell"
+    assert res.tool_calls[0].arguments["cmd"] == "pwd"
+    # tools sent as native function schemas (not in the system text)
+    names = {t["function"]["name"] for t in captured["body"]["tools"]}
+    assert "shell" in names and "write_file" in names
+
+
+def check_native_message_pairing():
+    a = adapters.OpenAIChatAdapter(endpoint="x", model="m", api_key="k",
+                                   tool_mode="native",
+                                   transport=lambda *_: {"choices": [{"message": {"content": "ok"}}]})
+    evs = [
+        core.Event(role="system", content="s"),
+        core.Event(role="user", content="do it"),
+        core.Event(role="assistant", content="calling",
+                   tool_calls=[core.ToolCall("call_1", "shell", {"cmd": "ls"})]),
+        core.Event(role="tool", content="exit=0", tool_call_id="call_1", name="shell"),
+        # orphan tool result whose assistant call is absent (e.g. compaction split)
+        core.Event(role="tool", content="orphan", tool_call_id="call_X", name="shell"),
+    ]
+    turn = core.AgentTurn(system="s", events=evs,
+                          tools=tools_mod.CANONICAL_TOOLS, mode="work")
+    msgs = a._render_messages_native(turn)
+    asst = [m for m in msgs if m["role"] == "assistant" and m.get("tool_calls")]
+    assert asst and asst[0]["tool_calls"][0]["id"] == "call_1"
+    tool_msgs = [m for m in msgs if m["role"] == "tool"]
+    assert any(m["tool_call_id"] == "call_1" for m in tool_msgs)
+    # the orphan is NOT emitted as a tool message (would break the API); downgraded
+    assert not any(m.get("tool_call_id") == "call_X" for m in tool_msgs)
+    assert any(m["role"] == "user" and "orphan" in m["content"] for m in msgs)
 
 
 def check_read_only_shell_detection():
@@ -210,6 +260,69 @@ def check_session_resume_is_mode_aware():
         # a clean finish (clear) makes it non-resumable
         again.clear()
         assert not session_mod.SessionStore(path).resumable("work")
+
+
+def check_read_and_replace_tools():
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        ws = root / "workspace"
+        ws.mkdir()
+        releases = root / "runtime" / "releases"
+        (releases / "v002-candidate").mkdir(parents=True)
+        h = human_mod.AutoHumanInterface()
+        rt = tools_mod.ShellToolRuntime(
+            workspace=ws, human=h,
+            approval=human_mod.ApprovalPolicy(h, mode="never"),
+            releases=releases, state=root / "state")
+        f = releases / "v002-candidate" / "m.py"
+        f.write_text("a = 1\nb = 2\n")
+
+        def call(name, **args):
+            return rt.execute(core.ToolCall("x", name, args), "improve")
+
+        cp = "../runtime/releases/v002-candidate/m.py"
+        assert "a = 1" in call("read_file", path=cp).output
+        assert "Replaced 1" in call("replace_in_file", path=cp, old="b = 2", new="b = 3").output
+        assert f.read_text() == "a = 1\nb = 3\n"
+        assert "No match" in call("replace_in_file", path=cp, old="zzz", new="y").output
+        f.write_text("x\nx\n")
+        assert "Ambiguous" in call("replace_in_file", path=cp, old="x", new="y").output
+        # reading outside the project is denied
+        assert "outside" in call("read_file", path="../../nope").output
+
+
+def check_write_file_tool():
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        ws = root / "workspace"
+        ws.mkdir()
+        releases = root / "runtime" / "releases"
+        (releases / "v001").mkdir(parents=True)
+        (releases / "v002-candidate").mkdir(parents=True)
+        h = human_mod.AutoHumanInterface()
+        rt = tools_mod.ShellToolRuntime(
+            workspace=ws, human=h,
+            approval=human_mod.ApprovalPolicy(h, mode="never"),
+            releases=releases, state=root / "state")
+
+        def w(path, content, mode):
+            return rt.execute(core.ToolCall("x", "write_file",
+                                            {"path": path, "content": content}), mode)
+
+        # work: workspace write (creates parent dirs)
+        w("a/b.txt", "hi", "work")
+        assert (ws / "a" / "b.txt").read_text() == "hi"
+        # work: cannot write into a release
+        assert "Denied" in w("../runtime/releases/v002-candidate/x.py", "x", "work").output
+        # improve: can write into a *-candidate
+        w("../runtime/releases/v002-candidate/x.py", "print(1)", "improve")
+        assert (releases / "v002-candidate" / "x.py").read_text() == "print(1)"
+        # improve: cannot overwrite the active (non-candidate) release
+        assert "Denied" in w("../runtime/releases/v001/x.py", "x", "improve").output
+        # review: read-only
+        assert "Denied" in w("z.txt", "x", "review").output
+        # outside workspace/releases (kernel etc.) is denied
+        assert "Denied" in w("../organism.py", "x", "improve").output
 
 
 def check_capability_floor_concepts():
