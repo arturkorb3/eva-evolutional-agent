@@ -40,11 +40,11 @@ improving are the same organism* — but every change is a gated, reversible,
 test-ratcheted step, never live surgery on a running system.
 
 It stays small and **provider-neutral**: the core speaks only to a swappable
-`ModelAdapter` (never to a provider directly). EVA reads its own code with plain
-shell (`grep`/`sed`), and an adapter translates EVA's own tool schema to the
-backend — today an OpenAI-compatible Chat endpoint with native tool calling (or a
-portable JSON-text fallback), or an offline fake for tests — while a budgeted,
-crash-resumable session keeps long runs affordable.
+`ModelAdapter` (never to a provider directly). EVA reads and edits its own code
+with a small set of file tools and shell, and an adapter translates EVA's own
+tool schema to the backend — today an OpenAI-compatible Chat endpoint with native
+tool calling (or a portable JSON-text fallback), or an offline fake for tests —
+while a budgeted, crash-resumable session keeps long runs affordable.
 
 ## Why a seed, not a framework?
 
@@ -123,7 +123,7 @@ a run can do anything a shell can do, then keep that box small. EVA runs inside 
 hardened container ([`docker-compose.yml`](docker-compose.yml)):
 
 - non-root user, `cap_drop: ALL`, `no-new-privileges`
-- **read-only root filesystem**; only `./data/{runtime,state,workspace}` are writable
+- **read-only root filesystem**; only `./data/{runtime,state,workspace,local}` are writable
 - CPU, memory and PID limits (contains runaways / fork bombs)
 - the kernel is baked into the image and not mounted — the agent can't touch it
 - secrets come from `.env` at runtime and are never baked into the image
@@ -265,8 +265,8 @@ This is an experimental research project, not production software.
 - The ratchet counts test *functions* in source; it can't tell a test body was
   weakened, or that an added test never actually runs.
 - Rollback is single-level (`LAST_GOOD`), not a full history stack.
-- Context summarization is deterministic and rudimentary, and only one session is
-  kept at a time.
+- Context summarization is deterministic and rudimentary; one session is kept per
+  mode.
 - Network egress is open by default (see residual risk above).
 
 ## Repository layout
@@ -285,7 +285,7 @@ seed/v001/           the initial genome (layered, hash-pinned), baked into the i
   manifest.json        file list + SHA-256 integrity hashes
 Dockerfile           hardened, non-root image (kernel + seed + Node.js)
 docker-compose.yml   the sandbox: read-only fs, caps dropped, resource limits
-run.ps1 / run.sh     convenience wrappers (build/status/work/improve/review/evolve/reseed/rollback)
+run.ps1 / run.sh     convenience wrappers (build/status/work/improve/review/evolve/paste/reseed/rollback)
 .env.example         model configuration template
 data/                created at runtime; all evolution lives here (git-ignored)
 ```
