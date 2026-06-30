@@ -15,12 +15,15 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import time
+from dataclasses import dataclass
 
 from core import Tool, ToolCall, ToolObservation
 from human import (ApprovalPolicy, HumanInterface, RISK_NONE, RISK_PROMOTE,
                    RISK_SHELL, RISK_WRITE)
+import self_model
 
 
 # --------------------------------------------------------------------------- #
@@ -58,6 +61,23 @@ FINISH_TOOL_DEF = Tool(
     input_schema={
         "type": "object",
         "properties": {"summary": {"type": "string"}},
+        "required": [],
+    },
+)
+
+INSPECT_SELF_TOOL = Tool(
+    name="inspect_self",
+    description="Read your OWN self-model on demand - you are a self-evolving agent "
+                "and are not preloaded with full docs. Returns your anatomy "
+                "(file->role), skills (tools), ratchet-pinned capabilities, or the "
+                "per-mode security policy. `topic` selects the slice: 'overview' "
+                "(default), 'anatomy', 'skills', 'capabilities', 'policy', or the name "
+                "of a file/capability/skill for detail (a filename also returns that "
+                "module's docstring). Use it before editing yourself so you target the "
+                "right file.",
+    input_schema={
+        "type": "object",
+        "properties": {"topic": {"type": "string"}},
         "required": [],
     },
 )
@@ -129,7 +149,8 @@ REQUEST_PROMOTION_TOOL = Tool(
 )
 
 CANONICAL_TOOLS: list[Tool] = [SHELL_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL,
-                              REPLACE_IN_FILE_TOOL, ASK_USER_TOOL, FINISH_TOOL_DEF]
+                              REPLACE_IN_FILE_TOOL, INSPECT_SELF_TOOL, ASK_USER_TOOL,
+                              FINISH_TOOL_DEF]
 # Extra tool available only when the agent is allowed to evolve the release.
 EVOLUTION_TOOLS: list[Tool] = CANONICAL_TOOLS + [REQUEST_PROMOTION_TOOL]
 
@@ -151,9 +172,12 @@ def normalize_candidate(candidate: str) -> str:
 # --------------------------------------------------------------------------- #
 # Read-only shell detection (auto-approve safe inspection commands)
 # --------------------------------------------------------------------------- #
+# Only commands that ACTUALLY exist in the runtime image (shell builtins + coreutils
+# + grep/sed/find/diff) belong here. `file` was removed: it is a separate package not
+# in the slim image, so auto-approving it produced exit=127 "file: not found" friction.
 READ_ONLY_SHELL_CMDS = {
     "grep", "egrep", "fgrep", "sed", "find", "head", "tail", "cat", "wc",
-    "sort", "uniq", "cut", "tr", "diff", "ls", "nl", "stat", "file",
+    "sort", "uniq", "cut", "tr", "diff", "ls", "nl", "stat",
     "basename", "dirname", "realpath", "echo", "pwd", "true", "test",
 }
 
@@ -161,22 +185,99 @@ _SHELL_WRITE_FLAGS = ("-i", "-delete", "-exec", "-execdir", "-ok", "-fprint", "-
 
 
 def is_read_only_shell(cmd: str) -> bool:
-    """Conservative whitelist: only auto-approve commands that just read/search
-    and cannot write. Any redirection, chaining, substitution or known write
-    flag forces the approval path. When unsure, return False (fail safe)."""
+    """Conservative whitelist: only auto-approve commands that just read/search and
+    cannot write. Read-only commands MAY be chained with ; && || and pipes (each
+    segment's command must be whitelisted). Redirection (> <), command substitution
+    ($( `) and backgrounding (&) are rejected, as are known write flags.
+
+    The scan is QUOTE-AWARE: a separator or redirect character INSIDE a quoted argument
+    (e.g. grep's `"a\\|b"` alternation, or a literal `>` in a search pattern) is part of
+    that argument, not shell syntax, so read-only inspection commands are not wrongly
+    rejected. Unbalanced quotes -> reject (fail safe)."""
     text = str(cmd or "")
-    if any(tok in text for tok in (">", "<", "$(", "`", "&", ";")):
-        return False
-    for piece in text.split("|"):
-        parts = piece.strip().split()
-        if not parts:
+    segments: list[str] = []
+    cur: list[str] = []
+    quote: "str | None" = None
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if quote is not None:
+            cur.append(c)
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in ("'", '"'):
+            quote = c
+            cur.append(c)
+            i += 1
+            continue
+        if c in ("<", ">", "`"):
+            return False  # redirection / command substitution can hide writes
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
             return False
+        if c == "&":
+            if i + 1 < n and text[i + 1] == "&":  # && = separator
+                segments.append("".join(cur)); cur = []; i += 2; continue
+            return False  # a lone & = backgrounding
+        if c == "|":
+            step = 2 if (i + 1 < n and text[i + 1] == "|") else 1
+            segments.append("".join(cur)); cur = []; i += step; continue
+        if c == ";":
+            segments.append("".join(cur)); cur = []; i += 1; continue
+        cur.append(c)
+        i += 1
+    if quote is not None:
+        return False  # unbalanced quote
+    segments.append("".join(cur))
+
+    for seg in segments:
+        if not seg.strip():
+            continue
+        try:
+            parts = shlex.split(seg)
+        except ValueError:
+            return False
+        if not parts:
+            continue
         head = os.path.basename(parts[0])
         if head not in READ_ONLY_SHELL_CMDS:
             return False
         if any(f in parts[1:] for f in _SHELL_WRITE_FLAGS):
             return False
     return True
+
+
+# --------------------------------------------------------------------------- #
+# Mode policy: the single, explicit, tested table of what each mode may do.
+# --------------------------------------------------------------------------- #
+# Security boundaries used to be implicit conditionals scattered across the tool
+# handlers. They are now declared ONCE here so they are visible, auditable and
+# pinned by a test. The runtime consults policy_for(mode); it never re-decides
+# per-mode permissions inline. Tools that only READ (read_file, inspect_self,
+# read-only shell) and the human/finish tools are universal and not gated here.
+@dataclass(frozen=True)
+class ModePolicy:
+    write_workspace: bool      # may write_file/replace_in_file inside the workspace
+    write_candidate: bool      # may write into a *-candidate release
+    run_writing_shell: bool    # may run non-read-only shell (writes/side effects)
+    request_promotion: bool    # may ask the supervisor/kernel to promote a candidate
+
+
+MODE_POLICIES: dict[str, ModePolicy] = {
+    #                       ws     cand   shell  promote
+    "work":    ModePolicy(True,  False, True,  False),
+    "review":  ModePolicy(False, False, False, False),
+    "improve": ModePolicy(True,  True,  True,  True),
+    "evolve":  ModePolicy(True,  True,  True,  True),
+}
+
+# Unknown/unexpected mode = the most restrictive policy (fail safe).
+_LOCKED_POLICY = ModePolicy(False, False, False, False)
+
+
+def policy_for(mode: str) -> ModePolicy:
+    return MODE_POLICIES.get(mode, _LOCKED_POLICY)
 
 
 # --------------------------------------------------------------------------- #
@@ -219,6 +320,9 @@ class ShellToolRuntime:
         if call.name == "replace_in_file":
             return self._replace_in_file(call, mode)
 
+        if call.name == "inspect_self":
+            return self._inspect_self(call)
+
         if call.name == "request_promotion":
             return self._request_promotion(call, mode)
 
@@ -230,15 +334,14 @@ class ShellToolRuntime:
             return ToolObservation(call.id, call.name, "Denied: empty shell command.")
 
         read_only = is_read_only_shell(cmd)
-        if mode == "review" and not read_only:
+        if not read_only and not policy_for(mode).run_writing_shell:
             return ToolObservation(call.id, call.name,
-                                   "Denied: review mode allows only read-only shell.")
+                                   f"Denied: {mode} mode allows only read-only shell.")
 
         risk = RISK_NONE if read_only else RISK_SHELL
-        label = "  [read-only, auto-approved]" if read_only else ""
-        print("\nSHELL in workspace:", cmd + label)
-
-        if not self.approval.approve(risk, "Approve shell?"):
+        # The command is shown compactly on the activity (▸) line; the FULL command is
+        # passed as detail so the human can reveal it with 'f' before approving.
+        if not self.approval.approve(risk, "Approve shell?", detail=cmd):
             return ToolObservation(call.id, call.name, "Shell rejected.")
 
         try:
@@ -256,21 +359,23 @@ class ShellToolRuntime:
         return ToolObservation(call.id, call.name, out)
 
     def _resolve_write_target(self, path: str, mode: str):
-        """Resolve a write target and enforce where each mode may write. Returns
-        (resolved_path, None) when allowed, else (None, denial_message)."""
-        if mode == "review":
-            return None, "Denied: review mode is read-only."
+        """Resolve a write target and enforce where each mode may write (per the
+        central MODE_POLICIES table). Returns (resolved_path, None) when allowed,
+        else (None, denial_message)."""
+        pol = policy_for(mode)
         raw = str(path or "").strip()
         if not raw:
             return None, "Denied: empty path."
         target = (self.workspace / raw).resolve()
         ws = self.workspace.resolve()
         if target == ws or str(target).startswith(str(ws) + os.sep):
+            if not pol.write_workspace:
+                return None, f"Denied: {mode} mode is read-only (no workspace writes)."
             return target, None
         if self.releases is not None:
             rel = self.releases.resolve()
             if str(target).startswith(str(rel) + os.sep):
-                if mode not in ("improve", "evolve"):
+                if not pol.write_candidate:
                     return None, "Denied: release writes only in improve/evolve mode."
                 release_dir = target.relative_to(rel).parts[0]
                 if not release_dir.endswith("-candidate"):
@@ -286,8 +391,11 @@ class ShellToolRuntime:
         content = call.arguments.get("content", "")
         if not isinstance(content, str):
             content = str(content)
-        print("\nWRITE file:", target)
-        if not self.approval.approve(RISK_WRITE, "Approve file write?"):
+        detail = f"write {target}  ({len(content)} chars)"
+        if content.strip():
+            preview = content if len(content) <= 4000 else content[:4000] + "\n...(truncated)"
+            detail += "\n\n" + preview
+        if not self.approval.approve(RISK_WRITE, "Approve file write?", detail=detail):
             return ToolObservation(call.id, call.name, "File write rejected.")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -343,8 +451,8 @@ class ShellToolRuntime:
             return ToolObservation(call.id, call.name,
                                    f"Ambiguous: 'old' occurs {n} times; add more "
                                    "surrounding context to make it unique.")
-        print("\nEDIT file:", target)
-        if not self.approval.approve(RISK_WRITE, "Approve file edit?"):
+        detail = f"edit {target}\n  - {old.strip()[:400]}\n  + {new.strip()[:400]}"
+        if not self.approval.approve(RISK_WRITE, "Approve file edit?", detail=detail):
             return ToolObservation(call.id, call.name, "File edit rejected.")
         target.write_text(text.replace(old, new, 1), encoding="utf-8")
         if target.suffix == ".py":
@@ -354,8 +462,18 @@ class ShellToolRuntime:
                 pass
         return ToolObservation(call.id, call.name, f"Replaced 1 occurrence in {target}")
 
+    def _inspect_self(self, call: ToolCall) -> ToolObservation:
+        # Read-only self-knowledge, available in every mode. EVA queries its own
+        # anatomy/skills/capabilities on demand instead of being preloaded with them.
+        topic = str(call.arguments.get("topic", "") or "overview")
+        try:
+            text = self_model.lookup(topic)
+        except Exception as exc:  # never let introspection crash a turn
+            text = f"inspect_self failed: {type(exc).__name__}: {exc}"
+        return ToolObservation(call.id, call.name, text)
+
     def _request_promotion(self, call: ToolCall, mode: str) -> ToolObservation:
-        if mode not in ("improve", "evolve"):
+        if not policy_for(mode).request_promotion:
             return ToolObservation(call.id, call.name,
                                    "Denied: promotion only in improve/evolve mode.")
         if self.releases is None or self.state is None:
@@ -373,8 +491,8 @@ class ShellToolRuntime:
                                    "runtime/releases/.")
 
         reason = str(call.arguments.get("reason", "") or "")
-        print("\nPROMOTION request for:", name)
-        if not self.approval.approve(RISK_PROMOTE, "Approve promotion request?"):
+        if not self.approval.approve(RISK_PROMOTE, "Approve promotion request?",
+                                     detail=f"promote {name}"):
             return ToolObservation(call.id, call.name, "Promotion request rejected.")
 
         self.state.mkdir(parents=True, exist_ok=True)

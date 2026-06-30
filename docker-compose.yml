@@ -46,6 +46,9 @@ services:
       # and survive restarts. ~/.local/bin is on PATH.
       HOME: "/eva/.local"
       PATH: "/eva/.local/.local/bin:/eva/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      # EVA runs INSIDE the sandbox here: it cannot read the host clipboard, so the
+      # clipboard bridge falls back to host-staged files (run.ps1 /paste watcher).
+      EVA_IN_CONTAINER: "1"
       # Provider selection for EVA's ModelAdapter. Set these in .env.
       EVA_PROVIDER: "${EVA_PROVIDER:-openai_chat}"
       EVA_ENDPOINT: "${EVA_ENDPOINT:-}"
@@ -66,6 +69,9 @@ services:
       # Optional autonomous mode. Only safe because this container contains it.
       ORGANISM_AUTO_YES: "${ORGANISM_AUTO_YES:-}"
       ORGANISM_ALLOW_SHELL: "${ORGANISM_ALLOW_SHELL:-}"
+      # Display / TUI.
+      EVA_TUI_FULL: "${EVA_TUI_FULL:-}"
+      NO_COLOR: "${NO_COLOR:-}"
 
     # Persist + expose everything the organism evolves, on the host.
     # The kernel (organism.py) is intentionally NOT mounted, so the agent

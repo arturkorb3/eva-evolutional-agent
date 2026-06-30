@@ -138,6 +138,9 @@ class FakeAdapter:
         self._script = script
         self._i = 0
 
+    def identity(self) -> dict:
+        return {"adapter": "fake", "model": "fake"}
+
     def run_turn(self, turn: AgentTurn) -> ModelResult:
         if callable(self._script):
             return self._script(turn)
@@ -180,6 +183,10 @@ class OpenAIChatAdapter:
         self.timeout = timeout if timeout is not None else _env_int("LLM_TIMEOUT", 180)
         self._transport = transport or _http_post_json
         self._step = 0
+
+    def identity(self) -> dict:
+        return {"adapter": "openai_chat", "model": self.model,
+                "endpoint": self.endpoint, "tool_mode": self.tool_mode}
 
     # -- shared: render a user event (text, or multimodal with images) ----- #
     def _user_content(self, ev):

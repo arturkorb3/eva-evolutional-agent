@@ -18,6 +18,7 @@ the rest of EVA evolve without re-binding to a provider.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -67,6 +68,10 @@ class Event:
     name: str | None = None
     # Provider-neutral image attachments: {"url": "data:<mime>;base64,..."} dicts.
     images: list[dict] = field(default_factory=list)
+    # Audit trail: ts, mode, step, model/adapter identity, tool id. Provider-neutral
+    # and free-form so an evolving system stays accountable (who/what/when/which model)
+    # without coupling the log to any wire format.
+    meta: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +84,7 @@ class Event:
             "tool_call_id": self.tool_call_id,
             "name": self.name,
             "images": list(self.images or []),
+            "meta": dict(self.meta or {}),
         }
 
     @classmethod
@@ -94,6 +100,7 @@ class Event:
             tool_call_id=d.get("tool_call_id"),
             name=d.get("name"),
             images=d.get("images") or [],
+            meta=d.get("meta") or {},
         )
 
 
@@ -159,15 +166,27 @@ def run_agent_loop(
     on_tool_call: Callable[[ToolCall], None] | None = None,
     on_observation: Callable[[ToolObservation], None] | None = None,
     on_error: Callable[[str, Exception], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """Run one provider-neutral agent turn-loop until it terminates.
 
-    Returns an outcome string: "finish" | "final" | "maxsteps" | "error".
+    Returns an outcome string: "finish" | "final" | "maxsteps" | "error" | "stopped".
     The core never inspects provider wire formats; it only asks the adapter for
     a ModelResult, executes any tool calls through the runtime, and records
-    everything as Events in the session (the canonical log).
+    everything as Events in the session (the canonical log). `should_stop` lets the
+    caller end the loop promptly between actions (e.g. a pivot request) instead of
+    running until the model happens to finish.
     """
+    # Adapter identity (model/adapter/endpoint) is stamped into each event's audit
+    # meta. Optional + duck-typed so the core stays provider-neutral.
+    try:
+        identity = dict(adapter.identity()) if hasattr(adapter, "identity") else {}
+    except Exception:
+        identity = {}
+
+    step = 0
     for _ in range(max_steps):
+        step += 1
         turn = AgentTurn(system=system, events=session.events(), tools=tools, mode=mode)
 
         try:
@@ -177,8 +196,11 @@ def run_agent_loop(
                 on_error("model", exc)
             return "error"
 
+        asst_meta = {"ts": time.time(), "mode": mode, "step": step,
+                     "kind": "assistant"}
+        asst_meta.update(identity)
         session.append(Event(role="assistant", content=result.say,
-                             tool_calls=list(result.tool_calls)))
+                             tool_calls=list(result.tool_calls), meta=asst_meta))
         if on_say and result.say:
             on_say(result.say)
 
@@ -199,10 +221,16 @@ def run_agent_loop(
                     call_id=call.id, name=call.name,
                     output=f"Tool '{call.name}' crashed: {type(exc).__name__}: {exc}",
                 )
+            tool_meta = {"ts": time.time(), "mode": mode, "step": step,
+                         "kind": "tool", "tool": obs.name,
+                         "tool_call_id": obs.call_id}
             session.append(Event(role="tool", content=obs.output,
-                                 tool_call_id=obs.call_id, name=obs.name))
+                                 tool_call_id=obs.call_id, name=obs.name,
+                                 meta=tool_meta))
             if on_observation:
                 on_observation(obs)
+            if should_stop and should_stop():
+                return "stopped"
             if call.name == FINISH_TOOL:
                 terminated = True
 

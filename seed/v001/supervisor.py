@@ -87,8 +87,25 @@ def release_files_ok(path):
 
 
 def count_checks(path):
+    """How many checks the release's tests.py ACTUALLY executes.
+
+    Prefer the live executed count (`tests.py --count`, = len of the check registry)
+    over a static regex: dead or duplicated test defs after the __main__ block never
+    run, so they must not inflate the promotion ratchet. Fall back to a regex scan
+    only if the count subprocess cannot run."""
+    tests = path / "tests.py"
     try:
-        text = (path / "tests.py").read_text(encoding="utf-8", errors="replace")
+        env = os.environ.copy()
+        env["ORGANISM_ROOT"] = str(ROOT)
+        env["ACTIVE_RELEASE"] = str(path)
+        r = subprocess.run([sys.executable, str(tests), "--count"], cwd=ROOT,
+                           env=env, capture_output=True, text=True, timeout=120)
+        if r.returncode == 0 and r.stdout.strip():
+            return int(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        pass
+    try:
+        text = tests.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return 0
     return len(re.findall(r"(?m)^def (?:check|test)_", text))
@@ -140,6 +157,7 @@ def qualification_round(round_no):
         [sys.executable, RELEASE / "agent.py", "--dry-run", "work"],
         [sys.executable, RELEASE / "agent.py", "--dry-run", "improve"],
         [sys.executable, RELEASE / "agent.py", "--dry-run", "review"],
+        [sys.executable, RELEASE / "agent.py", "--dry-run", "evolve"],
     ]
     for cmd in checks:
         if not run(cmd, timeout=120):
@@ -160,6 +178,8 @@ def candidate_gate(candidate_rel, rounds=2):
         [sys.executable, path / "supervisor.py", "--smoke"],
         [sys.executable, path / "supervisor.py", "--dry-run", "work"],
         [sys.executable, path / "supervisor.py", "--dry-run", "improve"],
+        [sys.executable, path / "supervisor.py", "--dry-run", "review"],
+        [sys.executable, path / "supervisor.py", "--dry-run", "evolve"],
     ]
     for cmd in checks:
         if not run(cmd, extra_env=env, timeout=120):

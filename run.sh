@@ -5,7 +5,8 @@ cd "$(dirname "$0")"
 
 mkdir -p data/runtime data/state data/workspace data/local
 
-cmd="${1:-help}"
+# Bare `./run.sh` just starts EVA (work is the default mode), matching run.ps1.
+cmd="${1:-work}"
 shift || true
 
 if [[ "$cmd" != "build" && "$cmd" != "help" && ! -f .env ]]; then

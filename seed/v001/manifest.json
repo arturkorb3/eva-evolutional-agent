@@ -11,6 +11,9 @@
     "tools.py",
     "human.py",
     "session.py",
+    "self_model.py",
+    "tui.py",
+    "context.py",
     "manifest.json"
   ],
   "layers": {
@@ -19,18 +22,24 @@
     "tools.py": "canonical tool schema + sandboxed runtime",
     "human.py": "HumanInterface + ApprovalPolicy",
     "session.py": "canonical append-only event log + compaction",
+    "context.py": "compaction policy layer: deterministic LLM-free budgeted view of the log",
+    "self_model.py": "generated self-knowledge (anatomy, skills, capabilities) derived from the live release",
+    "tui.py": "dependency-free status view: live, human-readable 'what EVA is doing now' tracking",
     "agent.py": "wiring + CLI (work/improve/review/evolve)",
     "supervisor.py": "release gates + promotion/pivot orchestration",
     "tests.py": "LLM-free checks (ratchet)"
   },
   "hashes": {
-    "supervisor.py": "f5f7ab31c5b683d146d619df2a2d3ff94dbb5ad70bca68b4dead4aca745710f1",
-    "agent.py": "4c2017029f0254e4d3eca2f0f45a78e7369d560ca02f34a93e51a00ddf7121a5",
-    "tests.py": "b0035e62adaac01a4b4d7d56aa1d25aba864f3058b06a700ca4a8932bd0ebd5c",
-    "core.py": "b3916ac89bb6ed97c7f61e9a2a290b9aeef0625336a64664f7ce96de4ffc6b02",
-    "adapters.py": "cdfdd06e16dc214ffce042bf691a8d06012544be5dcc89a8003ee2f2b8da3237",
-    "tools.py": "9eadcadb4b7efa22a54f38399810cdda1d95e4a1f73e15de8d8d916084923ca8",
-    "human.py": "6861531f541ae0c00393d9d2c30ff776e95562b76e69afba7a8dafacfcf9e476",
-    "session.py": "df08bb62cab2aa3e1c7a418ae31b945d02847d8fa8b5f2882b5963899117f4f1"
+    "supervisor.py": "9d7e869712504b12768210e8bd04382ff689a3f616c054239945b8c069efecd3",
+    "agent.py": "0e0cb2a658bdce357d9a47c65bb6933a1b9e6be959a376ec69ca0a37fedc9025",
+    "tests.py": "a0acf7fb494678ec9386c6a405eddc59bcb99deb996c6e0737df5f9d3f1122c6",
+    "core.py": "ca17f80505ccf43c1866943bbc19a7bd3b760a0596d2802093c8ec63bc0bb24d",
+    "adapters.py": "81ebc86bebe8578ddeb51a9797b44c89fdda70461c3b4b4a3e52615132cad6c8",
+    "tools.py": "5f16b44e6d86a2386822cd298a5f2d63ec9afe2da160a98d8d4327db891bb91f",
+    "human.py": "341ac345e8456a589c6f9769b8f5c09386ceae3811128f0be0bbf1d068d5e8b6",
+    "session.py": "1f44e3b491b22d1b40447804a4440d1e9cb40a0784c1e84ad0862c147ead7f45",
+    "self_model.py": "a65788ef44e7606920a5cb4def8b556dbfb5137acd2a47af466b963714365f4f",
+    "tui.py": "97eb64251fa2260a9ca8af15b2493d8d63d53e09cc36e696253c39b5a49f8e0b",
+    "context.py": "49411ac75aa0a4b8c6b6ae60bda47b0e10fd3a3ce86b34c7cf67ab1d441d2d13"
   }
 }

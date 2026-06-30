@@ -19,6 +19,10 @@ STATE = ROOT / "state"
 WORKSPACE = ROOT / "workspace"
 PROMOTION = STATE / "promotion_request.json"
 KERNEL_LOG = STATE / "kernel_history.jsonl"
+# Append-only release ledger: one row per promotion/rollback, so the lineage
+# (parent -> release, why, when) is auditable and rollback can step back MORE than
+# one level instead of only to a single LAST_GOOD pointer.
+LEDGER = STATE / "release_ledger.jsonl"
 
 # This file is the tiny non-evolving kernel. It seeds v001, starts the active
 # release, performs final promotion checks, and can roll back.
@@ -34,6 +38,67 @@ def log(kind, data):
     STATE.mkdir(exist_ok=True)
     with KERNEL_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"time": time.time(), "kind": kind, "data": data}, ensure_ascii=False) + "\n")
+
+
+def ledger_append(entry):
+    """Append one row to the release ledger (the audit trail of lineage)."""
+    STATE.mkdir(exist_ok=True)
+    rec = {"time": time.time()}
+    rec.update(entry)
+    with LEDGER.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def ledger_rows():
+    if not LEDGER.exists():
+        return []
+    rows = []
+    for line in LEDGER.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+    return rows
+
+
+def parent_of(release):
+    """The release `release` was promoted FROM, per the ledger (latest matching
+    promotion). None if it was never promoted (e.g. the seed v001) - that is where
+    multi-level rollback bottoms out."""
+    parent = None
+    for e in ledger_rows():
+        if e.get("kind") == "promoted" and e.get("release") == release:
+            parent = e.get("parent")
+    return parent
+
+
+def rehash_release_manifest(path, version_name):
+    """Make a promoted release's manifest HONEST. Evolutions edit release files but do
+    not always rehash manifest.json, which would otherwise keep stale hashes (and a
+    stale version) - the manifest would lie about its own content. At promotion the
+    kernel recomputes the pinned hashes from the actual files, stamps the live version,
+    and drops stray __pycache__ so the live bundle is clean and auditable."""
+    try:
+        pycache = path / "__pycache__"
+        if pycache.exists():
+            shutil.rmtree(pycache, ignore_errors=True)
+        mf = path / "manifest.json"
+        man = json.loads(mf.read_text(encoding="utf-8"))
+        man["version"] = version_name
+        hashes = man.get("hashes") or {}
+        for name in list(hashes.keys()):
+            f = path / name
+            if f.exists():
+                hashes[name] = _normalized_sha256(f)
+        man["hashes"] = hashes
+        mf.write_text(json.dumps(man, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        log("manifest_rehashed", {"release": "runtime/releases/" + path.name,
+                                  "version": version_name})
+    except Exception as exc:
+        log("manifest_rehash_failed", {"release": str(path), "error": str(exc)})
 
 
 def _normalized_sha256(path):
@@ -254,10 +319,19 @@ def maybe_promote(auto_yes=False):
         cand_path.rename(RELEASES / new_name)
         final_rel = "runtime/releases/" + new_name
 
+    # Make the promoted release auditable: rehash its manifest to its real content and
+    # stamp the live version, so the manifest never lies about an evolved release.
+    _, final_path = safe_release_rel(final_rel)
+    rehash_release_manifest(final_path, final_path.name)
+
     LAST_GOOD.write_text(old_rel, encoding="utf-8")
     CURRENT.write_text(final_rel, encoding="utf-8")
     PROMOTION.unlink()
 
+    ledger_append({"kind": "promoted", "parent": old_rel, "release": final_rel,
+                   "candidate": candidate, "reason": reason,
+                   "requested_by": req.get("requested_by"),
+                   "supervisor_qualified": bool(req.get("supervisor_qualified"))})
     log("promoted", {"from": old_rel, "to": final_rel, "candidate": candidate, "reason": reason})
     print("Promoted:", final_rel)
     return True
@@ -314,16 +388,27 @@ def status():
 def rollback():
     ensure_seed()
 
-    if not LAST_GOOD.exists():
-        print("No LAST_GOOD release recorded.")
+    current = CURRENT.read_text(encoding="utf-8").strip()
+
+    # Multi-level: step back along the ledger lineage (current's parent). Fall back to
+    # the single LAST_GOOD pointer for sessions that predate the ledger.
+    target = parent_of(current)
+    if not target and LAST_GOOD.exists():
+        lg = LAST_GOOD.read_text(encoding="utf-8").strip()
+        if lg and lg != current:
+            target = lg
+    if not target:
+        print("Nothing to roll back to (already at the base release).")
         return
 
-    old = CURRENT.read_text(encoding="utf-8").strip()
-    target = LAST_GOOD.read_text(encoding="utf-8").strip()
     safe_release_rel(target)
-
     CURRENT.write_text(target, encoding="utf-8")
-    log("rollback", {"from": old, "to": target})
+    # Surface the NEXT rollback target as LAST_GOOD for visibility.
+    nxt = parent_of(target)
+    if nxt:
+        LAST_GOOD.write_text(nxt, encoding="utf-8")
+    ledger_append({"kind": "rollback", "from": current, "to": target})
+    log("rollback", {"from": current, "to": target})
     print("Rolled back to:", target)
 
 

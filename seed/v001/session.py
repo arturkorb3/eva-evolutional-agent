@@ -10,9 +10,12 @@ view trims older turns into a deterministic, LLM-free summary for sending.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import pathlib
 
+import context
 from core import Event
 
 
@@ -30,13 +33,71 @@ class SessionStore:
         self._events.append(event)
         self._persist(event)
 
+    # -- blob store: keep fat image data-URLs OUT of the JSONL log --------- #
+    # Images are provider-neutral {"url": "data:..."} in memory (adapters render them
+    # directly). On disk we externalize each to state/blobs/<sha256>.<ext> and store a
+    # tiny {"ref": ..., "mime": ...} instead, so the append-only log stays small and
+    # deduplicates identical images. load() rehydrates refs back to data-URLs.
+    def _blob_dir(self) -> pathlib.Path:
+        return self.path.parent / "blobs"
+
+    def _externalize_images(self, d: dict) -> dict:
+        imgs = d.get("images") or []
+        if not imgs:
+            return d
+        out = []
+        for img in imgs:
+            url = img.get("url") if isinstance(img, dict) else None
+            if url and url.startswith("data:") and ";base64," in url:
+                header, b64 = url.split(";base64,", 1)
+                mime = header[5:] or "image/png"
+                ext = (mime.split("/")[-1].split("+")[0] or "bin")
+                try:
+                    raw = base64.b64decode(b64)
+                except Exception:
+                    out.append(img)
+                    continue
+                sha = hashlib.sha256(raw).hexdigest()
+                bd = self._blob_dir()
+                bd.mkdir(parents=True, exist_ok=True)
+                p = bd / f"{sha}.{ext}"
+                if not p.exists():
+                    p.write_bytes(raw)
+                out.append({"ref": f"blobs/{sha}.{ext}", "mime": mime})
+            else:
+                out.append(img)
+        d = dict(d)
+        d["images"] = out
+        return d
+
+    def _rehydrate_images(self, d: dict) -> dict:
+        imgs = d.get("images") or []
+        if not imgs:
+            return d
+        out = []
+        for img in imgs:
+            if isinstance(img, dict) and img.get("ref") and not img.get("url"):
+                try:
+                    raw = (self.path.parent / img["ref"]).read_bytes()
+                    mime = img.get("mime") or "image/png"
+                    b64 = base64.b64encode(raw).decode("ascii")
+                    out.append({"url": f"data:{mime};base64,{b64}"})
+                except Exception:
+                    out.append(img)  # keep the ref if the blob is missing
+            else:
+                out.append(img)
+        d = dict(d)
+        d["images"] = out
+        return d
+
     def seed(self, events: list[Event], mode: "str | None" = None) -> None:
         """Initialise a fresh session (system + first task) and persist it."""
         self._events = list(events)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("w", encoding="utf-8") as f:
             for ev in self._events:
-                f.write(json.dumps(ev.to_dict(), ensure_ascii=False) + "\n")
+                f.write(json.dumps(self._externalize_images(ev.to_dict()),
+                                   ensure_ascii=False) + "\n")
         self._write_meta(mode)
 
     def _write_meta(self, mode) -> None:
@@ -61,7 +122,8 @@ class SessionStore:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+                f.write(json.dumps(self._externalize_images(event.to_dict()),
+                                   ensure_ascii=False) + "\n")
         except Exception:
             pass
 
@@ -75,7 +137,7 @@ class SessionStore:
             if not line:
                 continue
             try:
-                events.append(Event.from_dict(json.loads(line)))
+                events.append(Event.from_dict(self._rehydrate_images(json.loads(line))))
             except Exception:
                 continue
         if not events:
@@ -92,41 +154,11 @@ class SessionStore:
             except Exception:
                 pass
 
-    # -- compaction (own layer) ------------------------------------------- #
+    # -- compaction (own layer: context.py) ------------------------------- #
     def chars(self) -> int:
-        return sum(len(e.content or "") for e in self._events)
+        return context.chars(self._events)
 
     def compact_view(self, budget: int, keep: int) -> list[Event]:
-        """Send the full log while it fits `budget`; past that send
-        system + first task + a condensed summary of dropped turns + the last
-        `keep` events verbatim. Deterministic and LLM-free (zero extra cost)."""
-        evs = self._events
-        if self.chars() <= budget or len(evs) <= keep + 2:
-            return list(evs)
-
-        system = evs[0]
-        first = evs[1]
-        first_trimmed = Event(role=first.role, content=(first.content or "")[:800])
-        tail = evs[-keep:]
-        dropped = evs[2:-keep]
-
-        view = [system, first_trimmed]
-        summary = _summarize(dropped)
-        if summary:
-            view.append(Event(role="user", content=summary))
-        view.extend(tail)
-        return view
-
-
-def _summarize(dropped: list[Event]) -> str | None:
-    lines = []
-    step = 0
-    for ev in dropped:
-        if ev.role == "assistant":
-            step += 1
-            say = (ev.content or "")[:80]
-            tool = ev.tool_calls[0].name if ev.tool_calls else "-"
-            lines.append(f"{step}. {say} [{tool}]")
-    if not lines:
-        return None
-    return "Progress so far (older steps, condensed):\n" + "\n".join(lines)
+        """Budgeted view of the canonical log for sending to the model. The policy
+        lives in context.py; the store just feeds it the full log."""
+        return context.compact(self._events, budget, keep)

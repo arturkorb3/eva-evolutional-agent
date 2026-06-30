@@ -25,6 +25,8 @@ from adapters import make_adapter, FakeAdapter, llm_error_signature
 from human import (ApprovalPolicy, AutoHumanInterface, CliHumanInterface,
                    extract_image_attachments)
 from session import SessionStore
+from self_model import brief as self_model_brief, render_full as self_model_full
+from tui import StatusView
 from tools import CANONICAL_TOOLS, EVOLUTION_TOOLS, ASK_USER_TOOL, FINISH_TOOL_DEF, ShellToolRuntime
 
 
@@ -69,7 +71,10 @@ Do useful work for the user inside the workspace.
   reading whole files.
 - Do not touch runtime/, releases or state/.
 - If you lack information, use ask_user instead of guessing.
-- Call finish with a short summary when the task is done."""
+- If the user only asks a question or makes small talk, ANSWER directly in your
+  reply and do NOT call any tool. Reserve `finish` for when an actual work TASK is
+  complete, and then give just a SHORT summary - never put a long answer or
+  explanation inside a finish summary."""
 
 IMPROVE_SYSTEM = """You are the evolution agent of EVA, running in DIRECTED mode.
 You have ONE concrete TASK; implement EXACTLY that - nothing else.
@@ -94,7 +99,9 @@ You have ONE concrete TASK; implement EXACTLY that - nothing else.
 EVOLVE_SYSTEM = """You are the evolution agent of EVA, running in AUTONOMOUS mode.
 No specific feature was requested; pick ONE small, high-value improvement to the
 release (supervisor/agent/tests/prompts) and implement it as a candidate via
-shell. EVA's modes are EXACTLY: work, improve, review, evolve. Your shell runs in
+shell. ANNOUNCE FIRST: before changing anything, send ONE short plain message
+stating the single improvement you will make and WHY (one or two sentences) - then
+implement it. EVA's modes are EXACTLY: work, improve, review, evolve. Your shell runs in
 the workspace dir; releases live one level up at ../runtime/releases/. Copy the
 active release to ../runtime/releases/<active>-candidate and edit inside it with
 read_file / replace_in_file / write_file (read files yourself; never ask the user
@@ -109,19 +116,18 @@ REVIEW_SYSTEM = """You are the review agent of EVA.
 Inspect and explain the workspace / release using read-only shell only. Do not
 change anything. Give clear risk notes and next steps, then finish."""
 
-# EVA's self-model: the release it evolves IS its own running code. This closes a
-# common blind spot where the agent hunts for an "external" CLI it cannot find.
+# EVA's self-model: the release it evolves IS its own running code. Rather than
+# preloading the whole file->role map here, EVA is told it can pull its current
+# anatomy/skills/capabilities on demand via the inspect_self tool. This keeps the
+# prompt small AND makes self-knowledge grow automatically with each release.
 SELF_MODEL = """Self-knowledge: YOU are this code. Your active release at
 ../runtime/releases/<active>/ IS your own runtime - evolving it changes how you
-yourself work. There is NO separate external CLI program:
-- agent.py = the interactive CLI/chat loop you are running in right now (reads the
-  user, drives the turn loop, wires everything together);
-- human.py = how you read user input and ask questions;
-- adapters.py = how you talk to the model API (e.g. to add multimodal/image input);
-- core.py = your provider-neutral turn loop and Event/Tool types;
-- tools.py = your tools; session.py = your memory; supervisor.py/tests.py = your gates.
-So tasks like "add image input to the CLI" or "change how you call the model" are
-implemented by editing THESE files inside a candidate - not somewhere else."""
+yourself work, and there is NO separate external program to look for. You are not
+preloaded with full docs: call the inspect_self tool to read your CURRENT anatomy
+(file->role), skills (tools) and ratchet-pinned capabilities on demand (topic:
+overview | anatomy | skills | capabilities | a filename | a capability name). Do
+this BEFORE editing so you target the right file (e.g. inspect_self anatomy to see
+that agent.py is the CLI loop, adapters.py the model API, core.py the turn loop)."""
 
 # Anti-stall: some models narrate ("I will now...") without emitting the tool call.
 ACTION_DISCIPLINE = """Act, don't narrate. When a step needs a tool, emit the tool
@@ -136,6 +142,26 @@ SYSTEMS = {
     "review": REVIEW_SYSTEM,
 }
 
+
+def session_awareness(mode: str) -> str:
+    """Tell EVA where its OWN conversation lives, so it can look things up instead of
+    guessing. The session is an append-only log on disk = the source of truth; the
+    visible context is only a compacted view, so older details can be re-read here."""
+    return (
+        "Session memory: your full conversation is an append-only log on disk (the "
+        f"source of truth) at ../state/session.{mode}.jsonl (relative to your shell; "
+        f"absolute: {STATE}/session.{mode}.jsonl). What you see in context is only a "
+        "compacted VIEW of it. If you need an earlier detail that scrolled out - a "
+        "path, a value, an earlier decision - READ the log yourself (read_file, or "
+        "`grep`/`sed -n`/`cat` on it). It is read-only; never write to it."
+    )
+
+
+def system_for(mode: str) -> str:
+    """The full system prompt for a mode, including session self-awareness. Used at run
+    time (fresh AND resume), so EVA always knows about its own session log."""
+    return SYSTEMS[mode] + "\n\n" + session_awareness(mode)
+
 # What EVA can actually do inside the sandbox at runtime. The image is read-only
 # and host-controlled, but EVA is NOT limited to "read-only everything": it has
 # writable, partly persistent space and can extend its own tooling.
@@ -148,6 +174,8 @@ ENV_CAPABILITIES = (
     "  - HTTP: there is no curl/wget; use Python (urllib.request) or `node` (global fetch).\n"
     "  - Python libs: `pip install --user <pkg>` installs under ~/.local and is importable.\n"
     "  - Binaries: place a static binary in ~/.local/bin (= $HOME/.local/bin, on PATH) and run it by name.\n"
+    "Not every common Unix utility is installed; before relying on optional binaries,\n"
+    "verify with `command -v <tool>` or prefer Python stdlib/Node equivalents.\n"
     "You cannot modify the container image/Dockerfile or organism.py (the kernel)."
 )
 
@@ -241,16 +269,33 @@ def backlog_summary(limit: int = 8) -> str:
 
 
 def record_shell_friction(observation_text: str, mode: str) -> str | None:
-    """A non-zero shell exit is friction worth remembering. Returns the signature
-    if recorded, else None."""
-    first = observation_text.splitlines()[0] if observation_text else ""
-    if first.startswith("exit=") and first.strip() != "exit=0":
-        code = first.split("=", 1)[1].strip()
-        signature = f"shell:exit={code}"
-        backlog_append({"kind": "execution_error", "mode": mode,
-                        "signature": signature, "detail": observation_text[:300]})
-        return signature
-    return None
+    """Record a shell FAILURE as friction - but only a real one.
+
+    A non-zero exit with EMPTY stderr is normally intentional control flow (grep with
+    no match, `test`, `command -v`, a script's own `exit 1`), not an EVA defect, so it
+    must NOT drive a pivot. Only a failure with actual error output counts, and the
+    signature includes a snippet of that error so unrelated failures don't collapse
+    into one coarse `shell:exit=1` bucket. Returns the signature if recorded, else None.
+    """
+    text = observation_text or ""
+    first = text.splitlines()[0] if text else ""
+    if not first.startswith("exit=") or first.strip() == "exit=0":
+        return None
+    code = first.split("=", 1)[1].strip()
+    stderr = ""
+    if "\nstderr:\n" in text:
+        stderr = text.split("\nstderr:\n", 1)[1].strip()
+    if not stderr:
+        return None  # non-zero exit but no error output -> normal control flow
+    err_line = stderr.splitlines()[0]
+    err_key = "-".join("".join(c.lower() if c.isalnum() else " " for c in err_line).split())[:40]
+    # Never collapse shell failures into a bare `shell:exit=N` bucket: that coarse
+    # signature let unrelated exits accumulate and triggered noisy pivots. If stderr is
+    # present but has no alphanumerics, still keep an explicit error-specific suffix.
+    signature = f"shell:exit={code}:{err_key or 'unknown-stderr'}"
+    backlog_append({"kind": "execution_error", "mode": mode,
+                    "signature": signature, "detail": text[:300]})
+    return signature
 
 
 def maybe_pivot(signature: str, mode: str, human) -> bool:
@@ -289,9 +334,13 @@ def run_mode(mode: str, task: str):
                                releases=RELEASES, state=STATE)
     session = SessionStore(STATE / f"session.{mode}.jsonl")
     adapter = make_adapter()
+    identity = adapter.identity() if hasattr(adapter, "identity") else {}
+    view = StatusView(mode=mode, identity=identity, release=RELEASE.name)
 
-    system = SYSTEMS[mode]
+    system = system_for(mode)
     interactive = (not AUTO_YES) and mode in {"work", "improve", "review"}
+
+    view.welcome(usage=interactive)
 
     resumed = False
     if (task or "").strip().lower() == "resume":
@@ -303,16 +352,16 @@ def run_mode(mode: str, task: str):
             print("\n(no resumable session found; starting fresh)")
             task = ""
 
+
     if not resumed:
         if not (task or "").strip():
             if interactive:
-                print(f"\nEVA {mode}: type your first message. (empty line or 'exit' to quit)")
                 try:
                     task = input("You: ").strip()
                 except EOFError:
                     task = ""
                 if not task or task.lower() in {"exit", "quit", "q", "bye"}:
-                    print("Nothing to do - bye.")
+                    print("Nothing to do — bye.")
                     return
             else:
                 task = default_task_for(mode)
@@ -324,6 +373,7 @@ def run_mode(mode: str, task: str):
             f"Workspace (writable; shell runs here - use RELATIVE paths): {WORKSPACE}\n"
             f"Active release: {RELEASE.name}  (from your shell cwd: ../runtime/releases/{RELEASE.name})\n"
             f"{ENV_CAPABILITIES}\n\n"
+            f"{self_model_brief()}\n\n"
             f"Friction backlog (repeat counts):\n{backlog_summary()}"
         )
         task_text, task_images = extract_image_attachments(task, WORKSPACE)
@@ -333,26 +383,25 @@ def run_mode(mode: str, task: str):
                   images=task_images),
         ], mode)
 
-    if interactive:
-        print("\n(interactive chat: reply after each turn; empty line or 'exit' to end)")
-
     pivoted = {"flag": False}
 
     def on_say(text: str):
-        if text:
-            print("Agent:", text)
+        view.say(text)
+
+    def on_tool_call(call):
+        view.tool_call(call)
 
     def on_observation(obs):
-        print("Observation:\n", obs.output)
+        view.observation(obs)
         if obs.name == "shell":
             sig = record_shell_friction(obs.output, mode)
             if sig and maybe_pivot(sig, mode, human):
                 pivoted["flag"] = True
 
     def on_error(stage: str, exc: Exception):
+        view.error(stage, exc)
         sig = (llm_error_signature(getattr(adapter, "endpoint", "llm"), exc)
                if stage == "model" else f"crash:{type(exc).__name__}")
-        print(f"{stage} error:", exc)
         backlog_append({"kind": "execution_error", "mode": mode,
                         "signature": sig, "detail": str(exc)[:300]})
 
@@ -366,8 +415,10 @@ def run_mode(mode: str, task: str):
             system=system,
             mode=mode,
             on_say=on_say,
+            on_tool_call=on_tool_call,
             on_observation=on_observation,
             on_error=on_error,
+            should_stop=lambda: pivoted["flag"],
         )
 
         if pivoted["flag"] or outcome == "error":
@@ -448,6 +499,11 @@ def _fake_roundtrip(mode: str = "work"):
 def main():
     args = sys.argv[1:]
 
+    if "--self-model" in args:
+        # LLM-free: print EVA's generated self-model (anatomy, skills, capabilities).
+        print(self_model_full())
+        return
+
     if "--smoke" in args:
         smoke()
         return
@@ -457,14 +513,14 @@ def main():
         dry_run(args[i + 1] if i + 1 < len(args) else "work")
         return
 
+    # `eva` with no mode just starts EVA (work is the default mode). An explicit
+    # mode word still selects it; anything else is treated as a work task.
     if args and args[0] in MODES:
         mode = args[0]
         task = " ".join(args[1:]).strip()
     else:
-        mode = (input("Mode [work/improve/review]: ").strip().lower() or "work")
-        if mode not in MODES:
-            raise SystemExit("Unknown mode.")
-        task = input("Task (optional, Enter to chat): ").strip()
+        mode = "work"
+        task = " ".join(args).strip()
 
     run_mode(mode, task)
 

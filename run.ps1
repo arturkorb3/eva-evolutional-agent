@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [string]$Command = "help",
+    [string]$Command = "work",
 
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
     [string[]]$Rest
