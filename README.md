@@ -10,8 +10,7 @@
 > rewrites its own source code. **Only ever run it inside the provided Docker
 > sandbox** — never directly on a host or against data you care about.
 
-EVA is a small, self-evolving coding agent. A tiny **immutable kernel** boots a
-single **seed** release; from there EVA can rewrite, test, and promote new
+EVA is a small, self-evolving LLM driven agent. A tiny **immutable kernel** boots a single **seed** release; from there EVA can rewrite, test, and promote new
 versions of *itself* inside a hardened Docker sandbox. The bet is the design:
 keep the core minimal, let capabilities grow only when real use demands them, and
 make every self-change a **gated, reversible** step — never live surgery on a
