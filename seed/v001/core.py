@@ -132,7 +132,8 @@ class AgentTurn:
 class ModelAdapter(Protocol):
     supports_native_tools: bool
 
-    def run_turn(self, turn: AgentTurn) -> ModelResult:
+    def run_turn(self, turn: AgentTurn,
+                 on_delta: "Callable[[str], None] | None" = None) -> ModelResult:
         ...
 
 
@@ -163,6 +164,7 @@ def run_agent_loop(
     mode: str,
     max_steps: int = 50,
     on_say: Callable[[str], None] | None = None,
+    on_say_delta: Callable[[str], None] | None = None,
     on_tool_call: Callable[[ToolCall], None] | None = None,
     on_observation: Callable[[ToolObservation], None] | None = None,
     on_error: Callable[[str, Exception], None] | None = None,
@@ -176,6 +178,11 @@ def run_agent_loop(
     everything as Events in the session (the canonical log). `should_stop` lets the
     caller end the loop promptly between actions (e.g. a pivot request) instead of
     running until the model happens to finish.
+
+    `on_say_delta`, if given, is forwarded to the adapter as a streaming sink: an
+    adapter that supports streaming calls it with assistant text fragments as they
+    arrive. Adapters that do not stream simply ignore it; the final ModelResult is
+    identical either way, so the rest of the loop is unaffected.
     """
     # Adapter identity (model/adapter/endpoint) is stamped into each event's audit
     # meta. Optional + duck-typed so the core stays provider-neutral.
@@ -190,7 +197,7 @@ def run_agent_loop(
         turn = AgentTurn(system=system, events=session.events(), tools=tools, mode=mode)
 
         try:
-            result = adapter.run_turn(turn)
+            result = adapter.run_turn(turn, on_delta=on_say_delta)
         except Exception as exc:  # adapter / transport failure
             if on_error:
                 on_error("model", exc)

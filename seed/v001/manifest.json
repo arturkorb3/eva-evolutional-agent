@@ -18,7 +18,7 @@
   ],
   "layers": {
     "core.py": "provider-neutral semantic model + turn loop",
-    "adapters.py": "ModelAdapter implementations (fake, openai_chat)",
+    "adapters.py": "ModelAdapter implementations (fake, openai_chat, anthropic)",
     "tools.py": "canonical tool schema + sandboxed runtime",
     "human.py": "HumanInterface + ApprovalPolicy",
     "session.py": "canonical append-only event log + compaction",
@@ -31,15 +31,15 @@
   },
   "hashes": {
     "supervisor.py": "9d7e869712504b12768210e8bd04382ff689a3f616c054239945b8c069efecd3",
-    "agent.py": "0e0cb2a658bdce357d9a47c65bb6933a1b9e6be959a376ec69ca0a37fedc9025",
-    "tests.py": "a0acf7fb494678ec9386c6a405eddc59bcb99deb996c6e0737df5f9d3f1122c6",
-    "core.py": "ca17f80505ccf43c1866943bbc19a7bd3b760a0596d2802093c8ec63bc0bb24d",
-    "adapters.py": "81ebc86bebe8578ddeb51a9797b44c89fdda70461c3b4b4a3e52615132cad6c8",
+    "agent.py": "95b041f4545c39f715fc8bab787a5b47e8047897d5af429c372c3a368de2dc2f",
+    "tests.py": "4fc28a512de87676255485fa6d6b7078f7af219ef2dc9d6f91821f55eb90acbf",
+    "core.py": "c877e3a7733f62cb76a1f8f8c167125d703886a1c6c24607871bc6f361befaea",
+    "adapters.py": "4520330baa8bd45e068ee01f79aad32d44d89f82727a1788671e3501ea95b89e",
     "tools.py": "5f16b44e6d86a2386822cd298a5f2d63ec9afe2da160a98d8d4327db891bb91f",
     "human.py": "341ac345e8456a589c6f9769b8f5c09386ceae3811128f0be0bbf1d068d5e8b6",
     "session.py": "1f44e3b491b22d1b40447804a4440d1e9cb40a0784c1e84ad0862c147ead7f45",
     "self_model.py": "a65788ef44e7606920a5cb4def8b556dbfb5137acd2a47af466b963714365f4f",
-    "tui.py": "97eb64251fa2260a9ca8af15b2493d8d63d53e09cc36e696253c39b5a49f8e0b",
+    "tui.py": "9ee7426d8cac569f7cb727a7320b5acc6c07d8e6635a071eaa042a64f628a4ab",
     "context.py": "49411ac75aa0a4b8c6b6ae60bda47b0e10fd3a3ce86b34c7cf67ab1d441d2d13"
   }
 }

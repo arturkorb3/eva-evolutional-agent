@@ -210,6 +210,188 @@ def check_native_message_pairing():
     assert any(m["role"] == "user" and "orphan" in m["content"] for m in msgs)
 
 
+def check_anthropic_adapter_with_fake_transport():
+    """AnthropicAdapter renders the Messages API (system/tools/messages), parses
+    tool_use blocks into ToolCalls, sets the required headers, marks a prompt-cache
+    breakpoint on the stable system prefix, and is reachable via make_adapter."""
+    captured = {}
+
+    def transport(endpoint, body, headers):
+        captured["endpoint"] = endpoint
+        captured["body"] = body
+        captured["headers"] = headers
+        return {"content": [
+            {"type": "text", "text": "looking"},
+            {"type": "tool_use", "id": "tu_1", "name": "shell", "input": {"cmd": "pwd"}},
+        ], "stop_reason": "tool_use"}
+
+    a = adapters.AnthropicAdapter(endpoint="https://api.anthropic.com/v1/messages",
+                                  model="claude-sonnet-5", api_key="k",
+                                  transport=transport)
+    assert a.supports_native_tools is True
+    turn = core.AgentTurn(system="sys",
+                          events=[core.Event(role="user", content="hi")],
+                          tools=tools_mod.CANONICAL_TOOLS, mode="work")
+    res = a.run_turn(turn)
+    assert res.tool_calls and res.tool_calls[0].name == "shell"
+    assert res.tool_calls[0].arguments["cmd"] == "pwd" and res.say == "looking"
+    body = captured["body"]
+    # Anthropic-required fields + headers
+    assert body["max_tokens"] and isinstance(body["system"], list)
+    assert captured["headers"]["anthropic-version"]
+    assert captured["headers"]["x-api-key"] == "k"
+    # tools use Anthropic's input_schema schema (NOT OpenAI's function wrapper)
+    names = {t["name"] for t in body["tools"]}
+    assert "shell" in names and all("input_schema" in t for t in body["tools"])
+    # prompt caching: a breakpoint on the stable system prefix (caches tools+system)
+    assert body["system"][-1].get("cache_control", {}).get("type") == "ephemeral"
+    # the factory wires EVA_PROVIDER=anthropic to this adapter
+    built = adapters.make_adapter({"EVA_PROVIDER": "anthropic",
+                                   "EVA_MODEL": "claude-sonnet-5", "EVA_API_KEY": "k"})
+    assert isinstance(built, adapters.AnthropicAdapter)
+    assert built.identity()["adapter"] == "anthropic"
+
+
+def check_anthropic_message_pairing():
+    """Anthropic rendering emits tool_result blocks paired with the assistant tool_use,
+    starts with a user turn, merges consecutive same-role turns, and downgrades orphans."""
+    a = adapters.AnthropicAdapter(
+        endpoint="x", model="m", api_key="k",
+        transport=lambda *_: {"content": [{"type": "text", "text": "ok"}]})
+    evs = [
+        core.Event(role="system", content="s"),
+        core.Event(role="user", content="do it"),
+        core.Event(role="assistant", content="calling",
+                   tool_calls=[core.ToolCall("call_1", "shell", {"cmd": "ls"})]),
+        core.Event(role="tool", content="exit=0", tool_call_id="call_1", name="shell"),
+        # orphan tool result whose assistant call is absent (e.g. compaction split)
+        core.Event(role="tool", content="orphan", tool_call_id="call_X", name="shell"),
+    ]
+    turn = core.AgentTurn(system="s", events=evs,
+                          tools=tools_mod.CANONICAL_TOOLS, mode="work")
+    msgs = a._render(turn)
+    assert msgs and msgs[0]["role"] == "user"  # Anthropic requires a leading user turn
+    blocks = [b for m in msgs for b in m["content"]]
+    assert any(b.get("type") == "tool_use" and b.get("id") == "call_1" for b in blocks)
+    results = [b for b in blocks if b.get("type") == "tool_result"]
+    assert any(b["tool_use_id"] == "call_1" for b in results)
+    # the orphan is NOT emitted as a tool_result (would break the API); downgraded to text
+    assert not any(b.get("tool_use_id") == "call_X" for b in results)
+    assert any(b.get("type") == "text" and "orphan" in b.get("text", "") for b in blocks)
+
+
+def _sse(obj):
+    return "data: " + json.dumps(obj)
+
+
+def check_openai_stream_parsing():
+    """Streaming (OpenAI): the adapter consumes an SSE stream, surfaces text via
+    on_delta as it arrives, reassembles fragmented tool-call arguments, and streams
+    ONLY when a delta sink is wired (else it uses the blocking transport)."""
+    sse = [
+        _sse({"choices": [{"delta": {"content": "Hel"}}]}),
+        _sse({"choices": [{"delta": {"content": "lo"}}]}),
+        _sse({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_1",
+             "function": {"name": "shell", "arguments": '{"cmd":"p'}}]}}]}),
+        _sse({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": 'wd"}'}}]}}]}),
+        "data: [DONE]",
+    ]
+    captured = {}
+
+    def stream_transport(endpoint, body, headers):
+        captured["stream_body"] = body
+        return iter(sse)
+
+    def blocking(endpoint, body, headers):
+        captured["blocking"] = True
+        return {"choices": [{"message": {"content": "x"}}]}
+
+    a = adapters.OpenAIChatAdapter(endpoint="x", model="m", api_key="k",
+                                   tool_mode="native", transport=blocking,
+                                   stream_transport=stream_transport)
+    turn = core.AgentTurn(system="s", events=[core.Event(role="user", content="hi")],
+                          tools=tools_mod.CANONICAL_TOOLS, mode="work")
+    chunks = []
+    res = a.run_turn(turn, on_delta=chunks.append)
+    assert "".join(chunks) == "Hello" and res.say == "Hello"
+    assert res.tool_calls and res.tool_calls[0].name == "shell"
+    assert res.tool_calls[0].arguments == {"cmd": "pwd"}
+    assert captured["stream_body"].get("stream") is True
+    # no delta sink -> must NOT stream (uses blocking transport)
+    a.run_turn(turn)
+    assert captured.get("blocking") is True
+
+
+def check_anthropic_stream_parsing():
+    """Streaming (Anthropic): the adapter consumes a Messages SSE stream, surfaces
+    text_delta via on_delta, reassembles input_json_delta into the tool-call input,
+    and streams only when a delta sink is wired."""
+    sse = [
+        _sse({"type": "message_start", "message": {}}),
+        _sse({"type": "content_block_start", "index": 0,
+              "content_block": {"type": "text"}}),
+        _sse({"type": "content_block_delta", "index": 0,
+              "delta": {"type": "text_delta", "text": "Hi "}}),
+        _sse({"type": "content_block_delta", "index": 0,
+              "delta": {"type": "text_delta", "text": "there"}}),
+        _sse({"type": "content_block_stop", "index": 0}),
+        _sse({"type": "content_block_start", "index": 1,
+              "content_block": {"type": "tool_use", "id": "tu_1", "name": "shell"}}),
+        _sse({"type": "content_block_delta", "index": 1,
+              "delta": {"type": "input_json_delta", "partial_json": '{"cmd":'}}),
+        _sse({"type": "content_block_delta", "index": 1,
+              "delta": {"type": "input_json_delta", "partial_json": '"ls"}'}}),
+        _sse({"type": "content_block_stop", "index": 1}),
+        _sse({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
+        _sse({"type": "message_stop"}),
+    ]
+    captured = {}
+
+    def stream_transport(endpoint, body, headers):
+        captured["stream_body"] = body
+        return iter(sse)
+
+    def blocking(endpoint, body, headers):
+        captured["blocking"] = True
+        return {"content": [{"type": "text", "text": "x"}]}
+
+    a = adapters.AnthropicAdapter(endpoint="x", model="m", api_key="k",
+                                  transport=blocking,
+                                  stream_transport=stream_transport)
+    turn = core.AgentTurn(system="s", events=[core.Event(role="user", content="hi")],
+                          tools=tools_mod.CANONICAL_TOOLS, mode="work")
+    chunks = []
+    res = a.run_turn(turn, on_delta=chunks.append)
+    assert "".join(chunks) == "Hi there" and res.say == "Hi there"
+    assert res.tool_calls and res.tool_calls[0].name == "shell"
+    assert res.tool_calls[0].arguments == {"cmd": "ls"}
+    assert captured["stream_body"].get("stream") is True
+    a.run_turn(turn)  # no delta sink -> blocking
+    assert captured.get("blocking") is True
+
+
+def check_tui_streams_then_finalizes_once():
+    """The status view renders streamed deltas live with ONE '● EVA' prefix, and the
+    final say() just closes the line - the text is never printed twice. A non-streamed
+    turn still prints normally."""
+    import io
+    import tui
+    buf = io.StringIO()
+    view = tui.StatusView(mode="work", identity={"model": "m"}, release="v001",
+                          stream=buf, color=False)
+    view.on_say_delta("Hel")
+    view.on_say_delta("lo")
+    view.say("Hello")  # reconcile: must close the line, not reprint
+    out = buf.getvalue()
+    assert out.count("● EVA") == 1 and out.count("Hello") == 1
+    assert out.endswith("\n")
+    buf2 = io.StringIO()
+    tui.StatusView(mode="work", stream=buf2, color=False).say("plain answer")
+    assert "● EVA plain answer" in buf2.getvalue()
+
+
 def check_read_only_shell_detection():
     """Safe read-only shell commands are auto-approved; writing/unsafe ones are not.
     Read-only commands may be CHAINED (; && || |); redirection, substitution and

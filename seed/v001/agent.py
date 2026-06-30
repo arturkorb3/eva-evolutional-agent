@@ -52,6 +52,9 @@ def _env_int(name, default):
 
 AUTO_YES = os.environ.get("ORGANISM_AUTO_YES") == "1"
 ALLOW_SHELL = os.environ.get("ORGANISM_ALLOW_SHELL") == "1"
+# Stream assistant text token-by-token (live typing) when the adapter supports it.
+# On by default; only free text is streamed - tool calls are still shown whole.
+STREAM = os.environ.get("EVA_STREAM", "1").strip().lower() not in ("0", "false", "no", "off")
 PIVOT_THRESHOLD = _env_int("ORGANISM_PIVOT_THRESHOLD", 3)
 HISTORY_BUDGET = _env_int("ORGANISM_HISTORY_BUDGET", 24000)
 HISTORY_KEEP = _env_int("ORGANISM_HISTORY_KEEP", 8)
@@ -388,6 +391,8 @@ def run_mode(mode: str, task: str):
     def on_say(text: str):
         view.say(text)
 
+    on_say_delta = view.on_say_delta if STREAM else None
+
     def on_tool_call(call):
         view.tool_call(call)
 
@@ -415,6 +420,7 @@ def run_mode(mode: str, task: str):
             system=system,
             mode=mode,
             on_say=on_say,
+            on_say_delta=on_say_delta,
             on_tool_call=on_tool_call,
             on_observation=on_observation,
             on_error=on_error,

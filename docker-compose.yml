@@ -56,11 +56,16 @@ services:
       EVA_API_KEY: "${EVA_API_KEY:-}"
       EVA_TOOL_MODE: "${EVA_TOOL_MODE:-native}"
       EVA_TEMPERATURE: "${EVA_TEMPERATURE:-}"
+      # Anthropic (provider=anthropic): max_tokens is required by the Messages API;
+      # prompt caching is on by default.
+      EVA_MAX_TOKENS: "${EVA_MAX_TOKENS:-}"
+      EVA_PROMPT_CACHE: "${EVA_PROMPT_CACHE:-}"
       # Legacy fallbacks (used only if the EVA_* vars above are unset).
       LLM_ENDPOINT: "${LLM_ENDPOINT:-}"
       LLM_MODEL: "${LLM_MODEL:-}"
       LLM_API_KEY: "${LLM_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       LLM_TIMEOUT: "${LLM_TIMEOUT:-}"
       # Context budget + pivot threshold.
       ORGANISM_HISTORY_BUDGET: "${ORGANISM_HISTORY_BUDGET:-}"
@@ -72,6 +77,7 @@ services:
       # Display / TUI.
       EVA_TUI_FULL: "${EVA_TUI_FULL:-}"
       NO_COLOR: "${NO_COLOR:-}"
+      EVA_STREAM: "${EVA_STREAM:-}"
 
     # Persist + expose everything the organism evolves, on the host.
     # The kernel (organism.py) is intentionally NOT mounted, so the agent

@@ -49,7 +49,7 @@ layer without re-inventing the loop.
 | Module | Responsibility |
 |---|---|
 | `core.py` | Provider-neutral turn loop + the `Event`/`Tool`/`ToolCall` types. Knows nothing about OpenAI, CLIs or wire formats. |
-| `adapters.py` | `ModelAdapter`s: `openai_chat` (native tool calls or a portable JSON-text fallback) and an offline `fake` for tests. |
+| `adapters.py` | `ModelAdapter`s: `openai_chat` (native tool calls or a portable JSON-text fallback), `anthropic` (Claude Messages API + prompt caching) and an offline `fake` for tests. |
 | `tools.py` | Canonical tools + sandboxed runtime + the explicit **mode-policy table** (who may write/shell/promote). |
 | `human.py` | `HumanInterface` + `ApprovalPolicy` (approve `[y/N/f]`; **`f`** reveals the full command) + host clipboard bridge. |
 | `session.py` | Append-only event log = the **source of truth**, with image **blobs** kept out of the log. |
@@ -153,6 +153,7 @@ externalized to `data/state/blobs/` to keep the event log small.
 | `EVA_PROVIDER` | Backend |
 |---|---|
 | `openai_chat` (default) | Any OpenAI-compatible Chat Completions endpoint (OpenAI, Azure, Ollama, LM Studio, vLLM, OpenRouter). |
+| `anthropic` | Anthropic Claude (Messages API) with native tool use and prompt caching (`EVA_MAX_TOKENS`, `EVA_PROMPT_CACHE`). |
 | `fake` | Offline, deterministic — for smoke tests / dry runs (no key). |
 
 `EVA_TOOL_MODE` selects `native` (function calling, default) or `json_text`

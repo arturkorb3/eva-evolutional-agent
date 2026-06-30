@@ -193,10 +193,22 @@ class StatusView:
         self.color = supports_color(self.stream) if color is None else color
         # Compact by default; EVA_TUI_FULL=1 expands commands and tool output.
         self.full = (os.environ.get("EVA_TUI_FULL") == "1") if full is None else full
+        # True while assistant text is being streamed live for the current turn, so
+        # say() (the final reconcile) closes the open line instead of reprinting it.
+        self._streaming = False
 
     def _w(self, line: str) -> None:
         try:
             self.stream.write(line + "\n")
+            self.stream.flush()
+        except Exception:
+            pass
+
+    def _raw(self, text: str) -> None:
+        """Write without a trailing newline and flush, so streamed text appears as it
+        arrives (live typing) rather than buffered per line."""
+        try:
+            self.stream.write(text)
             self.stream.flush()
         except Exception:
             pass
@@ -210,8 +222,25 @@ class StatusView:
                                color=self.color, usage=usage))
 
     def say(self, text: str) -> None:
+        if self._streaming:
+            # The text was already rendered live via on_say_delta; just close the line.
+            self._raw("\n")
+            self._streaming = False
+            return
         if text and text.strip():
             self._w(format_say(text, color=self.color))
+
+    def on_say_delta(self, chunk: str) -> None:
+        """Render an assistant text fragment as it streams in. The first chunk of a
+        turn prints the '● EVA ' prefix once; say() later closes the line. Tool calls
+        are NOT streamed here - only free text, which is the only thing worth showing
+        token-by-token."""
+        if not chunk:
+            return
+        if not self._streaming:
+            self._streaming = True
+            self._raw(_paint("● EVA ", "bold", "magenta", color=self.color))
+        self._raw(chunk)
 
     def tool_call(self, call) -> None:
         self._w(format_tool_call(call, color=self.color, full=self.full))
@@ -223,4 +252,7 @@ class StatusView:
         self._w(format_observation(obs, color=self.color, full=self.full))
 
     def error(self, stage: str, exc) -> None:
+        if self._streaming:
+            self._raw("\n")
+            self._streaming = False
         self._w(format_error(stage, exc, color=self.color))
