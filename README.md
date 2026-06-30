@@ -22,10 +22,15 @@ running system.
 ## The idea in one picture
 
 ```
-organism.py  ──seeds──▶  seed/v001  ──copy──▶  runtime/releases/v001 ──▶ v002 ──▶ …
-  (kernel, immutable)      (genome)              (live, evolvable)        promote │
-        ▲                                                                rollback │
-        └──────────────── gates · ledger · rollback ◀──────────────────────────────┘
+bootstrap (once)
+  organism.py ──seeds──▶ seed/v001 ──materialize──▶ runtime/releases/v1
+ (immutable kernel)       (genome, hash-pinned)        (first live release)
+
+evolution loop
+  runtime/releases/vN ──EVA edits──▶ vN-candidate ──gates──▶ promote ──▶ vN+1
+        ▲                                                                  │
+        └──── vN+1 becomes the live release · rollback steps back ─────────┘
+                        (every promotion recorded in the ledger)
 ```
 
 - **`organism.py`** is the kernel: ~300 lines, baked into the image, **not**
