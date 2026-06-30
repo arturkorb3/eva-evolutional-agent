@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -23,6 +24,16 @@ KERNEL_LOG = STATE / "kernel_history.jsonl"
 # (parent -> release, why, when) is auditable and rollback can step back MORE than
 # one level instead of only to a single LAST_GOOD pointer.
 LEDGER = STATE / "release_ledger.jsonl"
+
+# Evolution lock: a single-writer guard for the SHARED release store (runtime/
+# releases, CURRENT, LAST_GOOD, ledger). Only evolution-capable paths take it
+# (improve, evolve, promotion, rollback); work/review run lock-free so parallel
+# WORK sessions stay possible while self-evolution stays serialized. Cross-
+# container safe: separate `docker compose run` containers don't share a PID
+# namespace, so liveness is by TIMESTAMP (a live holder heartbeats the lock; a
+# crashed holder's timestamp goes stale and the lock becomes reclaimable).
+LOCK = STATE / "evolution.lock"
+LOCK_TTL = 90
 
 # This file is the tiny non-evolving kernel. It seeds v001, starts the active
 # release, performs final promotion checks, and can roll back.
@@ -73,6 +84,85 @@ def parent_of(release):
         if e.get("kind") == "promoted" and e.get("release") == release:
             parent = e.get("parent")
     return parent
+
+
+# --------------------------------------------------------------------------- #
+# Evolution lock (single-writer guard for the shared release store)
+# --------------------------------------------------------------------------- #
+_lock_stop = None
+
+
+def _lock_info():
+    try:
+        return json.loads(LOCK.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _lock_heartbeat(stop):
+    # Refresh the lock timestamp so a LIVE holder is never mistaken for crashed,
+    # while a crashed holder's timestamp ages past LOCK_TTL and becomes reclaimable.
+    while not stop.wait(LOCK_TTL / 3.0):
+        try:
+            info = _lock_info()
+            if not info or info.get("pid") != os.getpid():
+                return  # someone reclaimed it; stop touching it
+            info["ts"] = time.time()
+            LOCK.write_text(json.dumps(info), encoding="utf-8")
+        except Exception:
+            return
+
+
+def acquire_evolution_lock(mode, force=False):
+    """Acquire the single-writer evolution lock. Returns True on success. Refuses
+    (returns False, prints who holds it) if a live holder exists; reclaims a stale
+    lock (crashed holder, ts older than LOCK_TTL) or any lock when force=True."""
+    global _lock_stop
+    STATE.mkdir(exist_ok=True)
+    refusal = None
+    for _ in range(2):  # at most one reclaim-and-retry
+        try:
+            fd = os.open(str(LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"mode": mode, "ts": time.time(), "pid": os.getpid()}, f)
+            _lock_stop = threading.Event()
+            threading.Thread(target=_lock_heartbeat, args=(_lock_stop,),
+                             daemon=True).start()
+            return True
+        except FileExistsError:
+            info = _lock_info() or {}
+            age = time.time() - float(info.get("ts") or 0)
+            if force or age > LOCK_TTL:
+                try:
+                    LOCK.unlink()
+                except FileNotFoundError:
+                    pass
+                log("lock_reclaimed", {"stale_age": round(age, 1),
+                                       "forced": bool(force), "was": info})
+                continue
+            refusal = (f"Evolution lock is held (mode={info.get('mode')}, "
+                       f"{round(age, 1)}s ago). Refusing to run a second "
+                       f"evolution/promotion concurrently. If you are sure the "
+                       f"holder is dead: `python organism.py unlock`.")
+            break
+    if refusal:
+        print(refusal)
+    return False
+
+
+def release_evolution_lock():
+    global _lock_stop
+    if _lock_stop is not None:
+        _lock_stop.set()
+        _lock_stop = None
+    try:
+        info = _lock_info()
+        if info and info.get("pid") == os.getpid():
+            LOCK.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
 
 
 def rehash_release_manifest(path, version_name):
@@ -281,7 +371,25 @@ def next_version_name():
     return name
 
 
-def maybe_promote(auto_yes=False):
+def maybe_promote(auto_yes=False, locked=False):
+    # Promotion writes the shared release store, so it must hold the evolution lock.
+    # Callers already inside a locked evolution pass locked=True; standalone callers
+    # (work/review/bare) self-lock here, and only AFTER confirming there is something
+    # to promote, so the lock-free fast path stays lock-free.
+    if not PROMOTION.exists():
+        return False
+    if locked:
+        return _promote_locked(auto_yes=auto_yes)
+    if not acquire_evolution_lock("promote"):
+        print("(promotion deferred: evolution lock is busy)")
+        return False
+    try:
+        return _promote_locked(auto_yes=auto_yes)
+    finally:
+        release_evolution_lock()
+
+
+def _promote_locked(auto_yes=False):
     if not PROMOTION.exists():
         return False
 
@@ -385,7 +493,17 @@ def status():
             print("-", p.name + marker)
 
 
-def rollback():
+def rollback(force=False):
+    # Rollback rewrites CURRENT + ledger -> serialize it behind the evolution lock.
+    if not acquire_evolution_lock("rollback", force=force):
+        raise SystemExit(2)
+    try:
+        _rollback_locked()
+    finally:
+        release_evolution_lock()
+
+
+def _rollback_locked():
     ensure_seed()
 
     current = CURRENT.read_text(encoding="utf-8").strip()
@@ -419,7 +537,8 @@ def main():
 
     auto_yes = "--yes" in args
     allow_shell = "--allow-shell" in args
-    args = [a for a in args if a not in {"--yes", "--allow-shell"}]
+    force = "--force" in args
+    args = [a for a in args if a not in {"--yes", "--allow-shell", "--force"}]
 
     if not args:
         run_current_supervisor([], auto_yes=auto_yes, allow_shell=allow_shell)
@@ -433,22 +552,53 @@ def main():
         return
 
     if cmd == "rollback":
-        rollback()
+        rollback(force=force)
+        return
+
+    if cmd == "unlock":
+        info = _lock_info()
+        if LOCK.exists():
+            try:
+                LOCK.unlink()
+            except Exception:
+                pass
+            print("Cleared evolution lock. Prior holder:", info)
+        else:
+            print("No evolution lock is held.")
         return
 
     if cmd == "evolve":
         rounds = int(parse_flag_value(args, "--rounds", "1"))
 
-        # Keep only arguments relevant to the supervisor out of the kernel parse.
-        for i in range(1, rounds + 1):
-            print(f"\n=== evolution round {i}/{rounds} ===")
-            run_current_supervisor(["evolve-one"], auto_yes=auto_yes, allow_shell=allow_shell)
-            maybe_promote(auto_yes=auto_yes)
+        # Self-evolution mutates the SHARED release store; serialize the whole run
+        # (build candidate + promote) behind the single-writer evolution lock.
+        if not acquire_evolution_lock("evolve", force=force):
+            raise SystemExit(2)
+        try:
+            for i in range(1, rounds + 1):
+                print(f"\n=== evolution round {i}/{rounds} ===")
+                run_current_supervisor(["evolve-one"], auto_yes=auto_yes, allow_shell=allow_shell)
+                maybe_promote(auto_yes=auto_yes, locked=True)
+        finally:
+            release_evolution_lock()
 
         return
 
-    # Forward normal modes to the active supervisor.
-    if cmd in {"work", "improve", "review"}:
+    # improve can build + promote a candidate -> it must hold the evolution lock
+    # for the whole run, so two improves can't build conflicting candidates.
+    if cmd == "improve":
+        if not acquire_evolution_lock("improve", force=force):
+            raise SystemExit(2)
+        try:
+            run_current_supervisor(args, auto_yes=auto_yes, allow_shell=allow_shell)
+            maybe_promote(auto_yes=auto_yes, locked=True)
+        finally:
+            release_evolution_lock()
+        return
+
+    # work/review never write the release store -> they run lock-free (parallel-
+    # safe). maybe_promote() self-locks only if a stale promotion request exists.
+    if cmd in {"work", "review"}:
         run_current_supervisor(args, auto_yes=auto_yes, allow_shell=allow_shell)
         maybe_promote(auto_yes=auto_yes)
         return
@@ -459,7 +609,8 @@ def main():
     print("  python organism.py review [task]")
     print("  python organism.py evolve --rounds N [--yes] [--allow-shell]")
     print("  python organism.py status")
-    print("  python organism.py rollback")
+    print("  python organism.py rollback [--force]")
+    print("  python organism.py unlock        # clear a dead evolution lock")
     raise SystemExit(2)
 
 

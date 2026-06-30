@@ -37,6 +37,9 @@ RUNTIME = ROOT / "runtime"
 RELEASES = RUNTIME / "releases"
 STATE = ROOT / "state"
 WORKSPACE = ROOT / "workspace"
+# Per-session WORK logs live under sessions/work/<id>/; improve/review/evolve stay
+# single + mode-keyed (single-writer evolution / read-only review).
+SESSIONS = STATE / "sessions"
 
 BACKLOG = STATE / "backlog.jsonl"            # friction memory
 PIVOT_REQUEST = STATE / "pivot_request.json"  # improve/pivot path
@@ -130,7 +133,17 @@ preloaded with full docs: call the inspect_self tool to read your CURRENT anatom
 (file->role), skills (tools) and ratchet-pinned capabilities on demand (topic:
 overview | anatomy | skills | capabilities | a filename | a capability name). Do
 this BEFORE editing so you target the right file (e.g. inspect_self anatomy to see
-that agent.py is the CLI loop, adapters.py the model API, core.py the turn loop)."""
+that agent.py is the CLI loop, adapters.py the model API, core.py the turn loop).
+
+Your self-knowledge is GENERATED each run from THIS release's own code: anatomy from
+manifest.json `layers`, skills from tool docstrings, capabilities from the first
+docstring line of every tests.py `check_`. So a change only propagates into your NEXT
+release's self-model (and inspect_self) if it lands as one of those. When you add or
+change a capability: (a) add or extend a `check_` with a clear one-line docstring,
+(b) if you add a module or change a file's role, update manifest.json `layers` (plus
+`contains`/`hashes`), and (c) give any new tool a clear first-sentence docstring. A
+behaviour with no `check_` is invisible to your future self AND unprotected by the
+ratchet - so always ship a capability together with its check."""
 
 # Anti-stall: some models narrate ("I will now...") without emitting the tool call.
 ACTION_DISCIPLINE = """Act, don't narrate. When a step needs a tool, emit the tool
@@ -146,24 +159,132 @@ SYSTEMS = {
 }
 
 
-def session_awareness(mode: str) -> str:
+def session_awareness(session_path) -> str:
     """Tell EVA where its OWN conversation lives, so it can look things up instead of
     guessing. The session is an append-only log on disk = the source of truth; the
     visible context is only a compacted view, so older details can be re-read here."""
+    sp = pathlib.Path(session_path)
+    try:
+        rel = os.path.relpath(sp, WORKSPACE).replace(os.sep, "/")
+    except Exception:
+        rel = str(sp)
     return (
         "Session memory: your full conversation is an append-only log on disk (the "
-        f"source of truth) at ../state/session.{mode}.jsonl (relative to your shell; "
-        f"absolute: {STATE}/session.{mode}.jsonl). What you see in context is only a "
-        "compacted VIEW of it. If you need an earlier detail that scrolled out - a "
-        "path, a value, an earlier decision - READ the log yourself (read_file, or "
-        "`grep`/`sed -n`/`cat` on it). It is read-only; never write to it."
+        f"source of truth) at {rel} (relative to your shell; absolute: {sp}). What you "
+        "see in context is only a compacted VIEW of it. If you need an earlier detail "
+        "that scrolled out - a path, a value, an earlier decision - READ the log "
+        "yourself (read_file, or `grep`/`sed -n`/`cat` on it). It is read-only; never "
+        "write to it."
     )
 
 
-def system_for(mode: str) -> str:
+def system_for(mode: str, session_path=None) -> str:
     """The full system prompt for a mode, including session self-awareness. Used at run
-    time (fresh AND resume), so EVA always knows about its own session log."""
-    return SYSTEMS[mode] + "\n\n" + session_awareness(mode)
+    time (fresh AND resume), so EVA always knows about its own session log. The path is
+    per-session for work and mode-keyed otherwise."""
+    if session_path is None:
+        session_path = STATE / f"session.{mode}.jsonl"
+    return SYSTEMS[mode] + "\n\n" + session_awareness(session_path)
+
+
+# --------------------------------------------------------------------------- #
+# Work sessions: work is MULTI-session (each run isolated under sessions/work/<id>/);
+# improve/review/evolve stay single + mode-keyed. The blob store is already relative
+# to each session's own dir, so per-session isolation extends to image blobs for free.
+# --------------------------------------------------------------------------- #
+def _work_root() -> pathlib.Path:
+    return SESSIONS / "work"
+
+
+def _work_dir(session_id: str) -> pathlib.Path:
+    return _work_root() / session_id
+
+
+def _new_session_id() -> str:
+    import secrets
+    return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
+
+
+def _latest_pointer() -> pathlib.Path:
+    return _work_root() / "LATEST"
+
+
+def _read_latest_work():
+    try:
+        v = _latest_pointer().read_text(encoding="utf-8").strip()
+        return v or None
+    except Exception:
+        return None
+
+
+def _write_latest_work(session_id: str) -> None:
+    try:
+        _work_root().mkdir(parents=True, exist_ok=True)
+        _latest_pointer().write_text(session_id, encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _list_work_sessions() -> list[str]:
+    root = _work_root()
+    if not root.exists():
+        return []
+    ids = [p.name for p in root.iterdir()
+           if p.is_dir() and (p / "events.jsonl").exists()]
+    ids.sort()  # ids start with a timestamp -> chronological
+    return ids
+
+
+def _work_session_rows():
+    """Per work session: (id, n_events, first_task, is_latest), oldest first. Shared by
+    the `--list` command and the start-screen overview."""
+    latest = _read_latest_work()
+    rows = []
+    for sid in _list_work_sessions():
+        n = 0
+        first = ""
+        try:
+            for line in (_work_dir(sid) / "events.jsonl").read_text(
+                    encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                n += 1
+                if not first:
+                    try:
+                        o = json.loads(line)
+                        if o.get("role") == "user" and (o.get("content") or "").strip():
+                            first = o["content"].strip().splitlines()[0][:60]
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        rows.append((sid, n, first, sid == latest))
+    return rows
+
+
+def _print_work_sessions() -> None:
+    rows = _work_session_rows()
+    if not rows:
+        print("(no work sessions yet - `work [task]` starts one)")
+        return
+    print("Work sessions (oldest first):")
+    for sid, n, first, is_latest in rows:
+        mark = " *" if is_latest else "  "
+        print(f"{mark}{sid}  {n} events  {first}")
+    print("\nResume:  work resume          (most recent)")
+    print("         work resume <id>")
+
+
+def _clean_user_text(content: str) -> str:
+    """For a replayed user turn, show only the human's message: strip the runtime
+    CONTEXT block the seed appends to the first task (it begins with a 'Mode: ...'
+    line), and hide the synthetic 'Continue the previous session.' resume nudge."""
+    text = content or ""
+    if text.strip() == "Continue the previous session.":
+        return ""
+    i = text.find("\n\nMode: ")
+    return text[:i].rstrip() if i != -1 else text
 
 # What EVA can actually do inside the sandbox at runtime. The image is read-only
 # and host-controlled, but EVA is NOT limited to "read-only everything": it has
@@ -335,20 +456,60 @@ def run_mode(mode: str, task: str):
     )
     runtime = ShellToolRuntime(workspace=WORKSPACE, approval=approval, human=human,
                                releases=RELEASES, state=STATE)
-    session = SessionStore(STATE / f"session.{mode}.jsonl")
+
+    # Pick the session. work is MULTI-session: the task string may be `--list`
+    # (list + return), `resume` (most recent) or `resume <id>`. Other modes are
+    # single + mode-keyed.
+    if mode == "work":
+        t = (task or "").strip()
+        head = t.split()[0].lower() if t else ""
+        if head in {"--list", "list", "sessions"}:
+            _print_work_sessions()
+            return
+        if head == "resume":
+            parts = t.split()
+            target = parts[1] if len(parts) > 1 else _read_latest_work()
+            if target and (_work_dir(target) / "events.jsonl").exists():
+                session_id, want_resume = target, True
+            else:
+                miss = f" '{parts[1]}'" if len(parts) > 1 else ""
+                print(f"\n(no resumable work session{miss}; starting a new one)")
+                session_id, want_resume = _new_session_id(), False
+            task = ""
+        else:
+            session_id, want_resume = _new_session_id(), False
+        session = SessionStore(_work_dir(session_id) / "events.jsonl")
+        _write_latest_work(session_id)
+    else:
+        session = SessionStore(STATE / f"session.{mode}.jsonl")
+        want_resume = (task or "").strip().lower() == "resume"
+
     adapter = make_adapter()
     identity = adapter.identity() if hasattr(adapter, "identity") else {}
     view = StatusView(mode=mode, identity=identity, release=RELEASE.name)
 
-    system = system_for(mode)
+    system = system_for(mode, session.path)
     interactive = (not AUTO_YES) and mode in {"work", "improve", "review"}
 
     view.welcome(usage=interactive)
+    if mode == "work":
+        if interactive and not want_resume:
+            # Surface resumable sessions right on the start screen (discoverability).
+            view.session_overview(_work_session_rows(), current=session_id)
+        print(f"(session {session_id} \u2014 resume later with:  work resume {session_id})")
 
     resumed = False
-    if (task or "").strip().lower() == "resume":
+    if want_resume:
         if session.resumable(mode) and session.load():
-            session.append(Event(role="user", content="Continue the previous session."))
+            if interactive:
+                # Replay the prior conversation so the human can pick up the thread,
+                # then prompt them for the next message (below). Do NOT auto-run, and do
+                # NOT inject a synthetic 'Continue' user turn - that polluted the log and
+                # made EVA think the user kept typing "Continue the previous session.".
+                view.replay(session.events(), clean_user=_clean_user_text)
+            else:
+                # Autonomous resume (AUTO_YES) has no human to prompt: nudge EVA on.
+                session.append(Event(role="user", content="Continue the previous session."))
             print(f"\n(resuming previous {mode} session: {len(session.events())} events)")
             resumed = True
         else:
@@ -410,7 +571,23 @@ def run_mode(mode: str, task: str):
         backlog_append({"kind": "execution_error", "mode": mode,
                         "signature": sig, "detail": str(exc)[:300]})
 
+    # An interactive resume should let the human type first (no auto-run).
+    needs_user_input_first = resumed and interactive
+
     while True:
+        # On an interactive RESUME there is no new task yet: let the human read the
+        # replay and type the next message BEFORE EVA runs, instead of auto-replying.
+        if needs_user_input_first:
+            needs_user_input_first = False
+            try:
+                reply = input("\nYou (Enter or 'exit' to end): ").strip()
+            except EOFError:
+                reply = ""
+            if not reply or reply.lower() in {"exit", "quit", "q", "bye"}:
+                break
+            reply_text, reply_images = extract_image_attachments(reply, WORKSPACE)
+            session.append(Event(role="user", content=reply_text, images=reply_images))
+
         # Build the (compacted) turn view from the canonical log on each loop.
         outcome = run_agent_loop(
             adapter=adapter,

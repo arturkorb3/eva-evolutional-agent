@@ -1046,6 +1046,111 @@ def check_session_self_awareness():
         assert "append-only" in low and "read" in low, mode
 
 
+def check_work_sessions_are_isolated():
+    """work is multi-session: each run is its own isolated log + blob store under
+    sessions/work/<id>/. Two sessions never see each other's events, and their image
+    blobs land in separate per-session dirs (the blob path is relative to each
+    session's own directory)."""
+    import base64
+    import tempfile
+    img = {"url": "data:image/png;base64," + base64.b64encode(b"PNG").decode("ascii")}
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d) / "sessions" / "work"
+        a = session_mod.SessionStore(root / "A" / "events.jsonl")
+        b = session_mod.SessionStore(root / "B" / "events.jsonl")
+        a.seed([core.Event(role="system", content="s"),
+                core.Event(role="user", content="task A", images=[img])])
+        b.seed([core.Event(role="system", content="s"),
+                core.Event(role="user", content="task B")])
+        assert (root / "A" / "events.jsonl").exists()
+        assert (root / "B" / "events.jsonl").exists()
+        # A's image blob is under A only; B (no images) has no blob dir
+        assert (root / "A" / "blobs").exists()
+        assert not (root / "B" / "blobs").exists()
+        # reload B from disk: it must not see A's events
+        b2 = session_mod.SessionStore(root / "B" / "events.jsonl")
+        assert b2.load()
+        joined = " ".join(e.content for e in b2.events())
+        assert "task B" in joined and "task A" not in joined
+
+
+def check_work_session_ids_unique_and_path_aware_prompt():
+    """work mints unique, time-sortable session ids, exposes list/latest helpers, and
+    its session-awareness prompt points at THAT session's per-session events.jsonl."""
+    import agent
+    a = agent._new_session_id()
+    b = agent._new_session_id()
+    assert a != b and "-" in a and a[:8].isdigit()  # YYYYMMDD-HHMMSS-rand
+    assert callable(agent._list_work_sessions)
+    assert callable(agent._read_latest_work) and callable(agent._write_latest_work)
+    sp = agent.STATE / "sessions" / "work" / "20990101-000000-abcd" / "events.jsonl"
+    txt = agent.system_for("work", sp)
+    assert "events.jsonl" in txt and "append-only" in txt.lower()
+
+
+def check_self_evolution_propagates_self_knowledge():
+    """The improve/evolve prompts tell EVA that self-knowledge is generated from manifest
+    layers + tool/test docstrings, so a new capability must ship with a check_ (and
+    manifest layer / tool docstring) to propagate into the next release's self-model and
+    stay protected by the ratchet."""
+    import agent
+    for mode in ("improve", "evolve"):
+        low = agent.system_for(mode).lower()
+        assert "manifest" in low and "check_" in low and "docstring" in low, mode
+
+
+def check_resume_replays_prior_conversation():
+    """Resuming a work session replays the prior conversation so the user picks up the
+    thread: earlier user messages and EVA's replies render, and the appended runtime
+    context block is stripped from the shown user task."""
+    import io
+    import agent
+    import tui
+    buf = io.StringIO()
+    view = tui.StatusView(mode="work", stream=buf, color=False)
+    evs = [
+        core.Event(role="system", content="sys"),
+        core.Event(role="user",
+                   content="build a sorter\n\nMode: work\nRoot: /x\n(big context block)"),
+        core.Event(role="assistant", content="On it.",
+                   tool_calls=[core.ToolCall("c1", "shell", {"cmd": "ls"})]),
+        core.Event(role="tool", content="exit=0", tool_call_id="c1", name="shell"),
+        core.Event(role="assistant", content="Done - created sorter.js"),
+        # synthetic resume nudge from an older resume: must NOT show as a user turn
+        core.Event(role="user", content="Continue the previous session."),
+    ]
+    view.replay(evs, clean_user=agent._clean_user_text)
+    out = buf.getvalue()
+    assert "build a sorter" in out          # the human task is shown
+    assert "Mode: work" not in out          # the appended context block is stripped
+    assert "On it." in out and "Done - created sorter.js" in out
+    assert "previous conversation" in out.lower()
+    assert "Continue the previous session." not in out  # synthetic nudge filtered out
+
+
+def check_start_screen_lists_resumable_sessions():
+    """The start screen surfaces resumable work sessions (id + first task) and how to
+    resume, so the user can pick up a prior session without running --list first; the
+    brand-new current session is excluded from that list."""
+    import io
+    import agent
+    import tui
+    assert callable(agent._work_session_rows)
+    buf = io.StringIO()
+    view = tui.StatusView(mode="work", stream=buf, color=False)
+    rows = [("20990101-000000-aaaa", 12, "do thing A", False),
+            ("20990101-000100-bbbb", 8, "do thing B", True)]
+    view.session_overview(rows, current="20990101-999999-self")
+    out = buf.getvalue()
+    assert "20990101-000000-aaaa" in out and "do thing A" in out
+    assert "20990101-000100-bbbb" in out and "work resume" in out
+    # only-current -> nothing to resume -> nothing shown
+    buf2 = io.StringIO()
+    tui.StatusView(mode="work", stream=buf2, color=False).session_overview(
+        [("only", 1, "t", False)], current="only")
+    assert buf2.getvalue().strip() == ""
+
+
 def check_prompt_warns_about_missing_optional_binaries():
     """The runtime environment prompt prevents repeated exit=127 friction by telling
     EVA that common utilities may be absent, to verify optional binaries before use,

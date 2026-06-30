@@ -18,9 +18,7 @@ foreach ($d in "data/runtime", "data/state", "data/workspace", "data/local") {
     }
 }
 
-if (($Command -notin @("build", "help")) -and (-not (Test-Path -LiteralPath ".env"))) {
-    Write-Warning "No .env file found. Copy .env.example to .env and set your LLM credentials."
-}
+# First-run onboarding (interactive .env setup) runs just before dispatch, below.
 
 function Invoke-Eva {
     param([string[]]$EvaArgs)
@@ -71,10 +69,160 @@ function Stop-ClipboardWatcher {
     Remove-Item Env:EVA_CLIP_DIR -ErrorAction SilentlyContinue
 }
 
+# --------------------------------------------------------------------------- #
+# First-run onboarding: interactively create or complete .env (provider + creds).
+# EVA reads its config from .env (via docker-compose substitution), so this runs
+# host-side, BEFORE the container starts. API keys are entered masked and written
+# to the gitignored .env in plain text (standard for .env). Skip with EVA_NO_SETUP=1.
+# --------------------------------------------------------------------------- #
+function Read-EnvMap {
+    param([string]$Path)
+    $map = @{}
+    if (Test-Path -LiteralPath $Path) {
+        foreach ($line in Get-Content -LiteralPath $Path) {
+            $t = $line.Trim()
+            if ($t -eq "" -or $t.StartsWith("#")) { continue }
+            $i = $t.IndexOf("=")
+            if ($i -lt 1) { continue }
+            $map[$t.Substring(0, $i).Trim()] = $t.Substring($i + 1).Trim()
+        }
+    }
+    return $map
+}
+
+function Save-EnvLines {
+    param([string[]]$Lines)
+    $enc = New-Object System.Text.UTF8Encoding($false)   # no BOM (docker compose-safe)
+    [System.IO.File]::WriteAllLines($script:EnvFull, [string[]]$Lines, $enc)
+}
+
+function Set-EnvVar {
+    param([string]$Name, [string]$Value)
+    $lines = @()
+    if (Test-Path -LiteralPath $script:EnvFull) { $lines = @(Get-Content -LiteralPath $script:EnvFull) }
+    $out = @()
+    $found = $false
+    foreach ($l in $lines) {
+        if ($l -match "^\s*$([regex]::Escape($Name))\s*=") { $out += "$Name=$Value"; $found = $true }
+        else { $out += $l }
+    }
+    if (-not $found) { $out += "$Name=$Value" }
+    Save-EnvLines $out
+}
+
+function Test-Placeholder {
+    param([string]$Value)
+    return [string]::IsNullOrWhiteSpace($Value) -or ($Value -match "replace-me|^sk-replace|^sk-ant-replace")
+}
+
+function Read-Secret {
+    param([string]$Prompt)
+    $sec = Read-Host -Prompt $Prompt -AsSecureString
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    try { return [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+
+function Show-EnvTip {
+    Write-Host "Tip: .env.example documents every option (model timeout, context budget," -ForegroundColor DarkGray
+    Write-Host "     autonomous mode, streaming, prompt caching, TUI...). Edit .env any time," -ForegroundColor DarkGray
+    Write-Host "     or copy .env.example over it for the fully-commented template." -ForegroundColor DarkGray
+}
+
+function Invoke-EvaOnboarding {
+    if ($env:EVA_NO_SETUP -eq "1") { return }
+    $fresh = -not (Test-Path -LiteralPath $script:EnvFull)
+    $did = $fresh
+
+    if ($fresh) {
+        Write-Host ""
+        Write-Host "I don't see a .env config yet." -ForegroundColor Yellow
+        $ans = Read-Host "Shall I set up EVA with you now? [Y/n]"
+        if ($ans -match '^\s*(n|no)\s*$') {
+            Write-Warning "Skipping setup - EVA may not reach a model without credentials."
+            return
+        }
+        Save-EnvLines @("# EVA configuration (created by run.ps1 setup)")
+    }
+
+    $map = Read-EnvMap $script:EnvFull
+    $provider = $map["EVA_PROVIDER"]
+
+    if ($fresh -or [string]::IsNullOrWhiteSpace($provider)) {
+        Write-Host ""
+        Write-Host "Which model provider should EVA use?"
+        Write-Host "  [1] OpenAI-compatible  (OpenAI / Azure / Ollama / LM Studio / vLLM / OpenRouter)"
+        Write-Host "  [2] Anthropic Claude   (Messages API: native tools + prompt caching)"
+        Write-Host "  [3] Offline 'fake'     (no API key; smoke tests / dry runs)"
+        $choice = (Read-Host "Choose [1/2/3] (default 1)").Trim()
+        switch ($choice) {
+            "2" { $provider = "anthropic" }
+            "3" { $provider = "fake" }
+            default { $provider = "openai_chat" }
+        }
+        Set-EnvVar "EVA_PROVIDER" $provider
+        $map = Read-EnvMap $script:EnvFull
+        $did = $true
+    }
+
+    if ($provider -eq "fake") {
+        if ($did) { Write-Host "Provider 'fake' needs no credentials - you're set." -ForegroundColor Green; Show-EnvTip; Write-Host "" }
+        return
+    }
+
+    if ($provider -eq "anthropic") {
+        if ((Test-Placeholder $map["EVA_MODEL"]) -and (Test-Placeholder $map["LLM_MODEL"])) {
+            Write-Host ""
+            Write-Host "Which Claude model?"
+            Write-Host "  [1] claude-opus-4-8    (frontier; long-running agents & coding)"
+            Write-Host "  [2] claude-opus-4-6    (frontier; long-running agents & coding)"
+            Write-Host "  [3] claude-sonnet-4-6  (best speed / intelligence balance)"
+            Write-Host "  [4] claude-haiku-4-5   (fastest, near-frontier)"
+            Write-Host "  [5] other              (type a custom model id)"
+            $mc = (Read-Host "Choose [1-5] (default 3)").Trim()
+            switch ($mc) {
+                "1" { $m = "claude-opus-4-8" }
+                "2" { $m = "claude-opus-4-6" }
+                "4" { $m = "claude-haiku-4-5" }
+                "5" { $m = (Read-Host "Model id").Trim() }
+                default { $m = "claude-sonnet-4-6" }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($m)) { Set-EnvVar "EVA_MODEL" $m; $did = $true }
+        }
+        if ((Test-Placeholder $map["EVA_API_KEY"]) -and (Test-Placeholder $map["ANTHROPIC_API_KEY"])) {
+            $k = Read-Secret "Anthropic API key (sk-ant-...) [input hidden]"
+            if (-not [string]::IsNullOrWhiteSpace($k)) { Set-EnvVar "EVA_API_KEY" $k.Trim(); $did = $true }
+        }
+    }
+    elseif ($provider -eq "openai_chat") {
+        if ((Test-Placeholder $map["EVA_ENDPOINT"]) -and (Test-Placeholder $map["LLM_ENDPOINT"])) {
+            $e = Read-Host "Chat Completions endpoint (Enter for https://api.openai.com/v1/chat/completions)"
+            if ([string]::IsNullOrWhiteSpace($e)) { $e = "https://api.openai.com/v1/chat/completions" }
+            Set-EnvVar "EVA_ENDPOINT" $e.Trim(); $did = $true
+        }
+        if ((Test-Placeholder $map["EVA_MODEL"]) -and (Test-Placeholder $map["LLM_MODEL"])) {
+            $m = Read-Host "Model name (e.g. gpt-5.5, llama3.1)"
+            if (-not [string]::IsNullOrWhiteSpace($m)) { Set-EnvVar "EVA_MODEL" $m.Trim(); $did = $true }
+        }
+        if ((Test-Placeholder $map["EVA_API_KEY"]) -and (Test-Placeholder $map["LLM_API_KEY"]) -and (Test-Placeholder $map["OPENAI_API_KEY"])) {
+            $k = Read-Secret "API key [input hidden] (type 'ollama' for a local server that ignores it)"
+            if (-not [string]::IsNullOrWhiteSpace($k)) { Set-EnvVar "EVA_API_KEY" $k.Trim(); $did = $true }
+        }
+    }
+
+    if ($did) { Write-Host "Saved to .env - starting EVA..." -ForegroundColor Green; Show-EnvTip; Write-Host "" }
+}
+
+$script:EnvFull = Join-Path $PSScriptRoot ".env"
+if ($Command -in @("work", "improve", "review", "evolve")) {
+    Invoke-EvaOnboarding
+}
+
 switch ($Command) {
     "build" { docker compose build }
     "status" { Invoke-Eva @("status") }
-    "rollback" { Invoke-Eva @("rollback") }
+    "rollback" { Invoke-Eva (@("rollback") + $Rest) }
+    "unlock" { Invoke-Eva @("unlock") }
     "reseed" {
         # Drop the materialized runtime so the next start re-seeds v001 from
         # seed/ (mounted), without an image rebuild. State/workspace are kept.
@@ -158,7 +306,8 @@ Usage: .\run.ps1 <command> [args]
   review  [task]        Read-only inspection
   paste                 Save a clipboard screenshot into data/workspace/ to attach in chat
   evolve  [N] [flags]   Run N autonomous evolution rounds
-  rollback              Roll back to the last good release
+  rollback [--force]    Roll back to the last good release
+  unlock                Clear a dead evolution lock (single-writer guard)
   reseed                Re-seed v001 from seed/ (after editing the genome; no rebuild)
   shell                 Open a shell inside the container (debug)
 

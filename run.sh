@@ -9,9 +9,7 @@ mkdir -p data/runtime data/state data/workspace data/local
 cmd="${1:-work}"
 shift || true
 
-if [[ "$cmd" != "build" && "$cmd" != "help" && ! -f .env ]]; then
-  echo "WARN: No .env file found. Copy .env.example to .env and set your LLM credentials." >&2
-fi
+# First-run onboarding (interactive .env setup) runs just before dispatch, below.
 
 eva() { docker compose run --rm eva "$@"; }
 
@@ -71,10 +69,131 @@ eva_stop_watcher() {
   EVA_WATCHER_PID=""
 }
 
+# --------------------------------------------------------------------------- #
+# First-run onboarding: interactively create or complete .env (provider + creds).
+# Runs host-side before the container starts. API keys are entered masked and
+# written to the gitignored .env. Skip with EVA_NO_SETUP=1.
+# --------------------------------------------------------------------------- #
+read_env_val() {
+  [ -f .env ] || { printf ''; return 0; }
+  local line=""
+  line="$(grep -E "^[[:space:]]*$1[[:space:]]*=" .env 2>/dev/null | tail -1 || true)"
+  printf '%s' "${line#*=}"
+}
+
+set_env_var() {
+  touch .env
+  local tmp; tmp="$(mktemp)"
+  grep -vE "^[[:space:]]*$1[[:space:]]*=" .env > "$tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$1" "$2" >> "$tmp"
+  mv "$tmp" .env
+}
+
+is_placeholder() {
+  case "$1" in
+    ""|*replace-me*|sk-replace*|sk-ant-replace*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+read_secret() {
+  local s=""
+  read -rs -p "$1: " s </dev/tty || true
+  echo >&2
+  printf '%s' "$s"
+}
+
+eva_env_tip() {
+  echo "Tip: .env.example documents every option (model timeout, context budget,"
+  echo "     autonomous mode, streaming, prompt caching, TUI...). Edit .env any time,"
+  echo "     or copy .env.example over it for the fully-commented template."
+}
+
+eva_onboarding() {
+  [ "${EVA_NO_SETUP:-}" = "1" ] && return 0
+  local fresh=0 did=0 provider ans choice m e k
+  [ -f .env ] || fresh=1
+  if [ "$fresh" = "1" ]; then
+    echo
+    echo "I don't see a .env config yet."
+    printf "Shall I set up EVA with you now? [Y/n] "
+    read -r ans </dev/tty || ans=""
+    case "$ans" in n|N|no|NO) echo "Skipping setup - EVA may not reach a model without credentials." >&2; return 0 ;; esac
+    echo "# EVA configuration (created by run.sh setup)" > .env
+    did=1
+  fi
+
+  provider="$(read_env_val EVA_PROVIDER)"
+  if [ "$fresh" = "1" ] || [ -z "$provider" ]; then
+    echo
+    echo "Which model provider should EVA use?"
+    echo "  [1] OpenAI-compatible  (OpenAI / Azure / Ollama / LM Studio / vLLM / OpenRouter)"
+    echo "  [2] Anthropic Claude   (Messages API: native tools + prompt caching)"
+    echo "  [3] Offline 'fake'     (no API key; smoke tests / dry runs)"
+    printf "Choose [1/2/3] (default 1): "
+    read -r choice </dev/tty || choice=""
+    case "$choice" in 2) provider="anthropic" ;; 3) provider="fake" ;; *) provider="openai_chat" ;; esac
+    set_env_var EVA_PROVIDER "$provider"; did=1
+  fi
+
+  if [ "$provider" = "fake" ]; then
+    [ "$did" = "1" ] && { echo "Provider 'fake' needs no credentials - you're set."; eva_env_tip; echo; }
+    return 0
+  fi
+
+  if [ "$provider" = "anthropic" ]; then
+    if is_placeholder "$(read_env_val EVA_MODEL)" && is_placeholder "$(read_env_val LLM_MODEL)"; then
+      echo
+      echo "Which Claude model?"
+      echo "  [1] claude-opus-4-8    (frontier; long-running agents & coding)"
+      echo "  [2] claude-opus-4-6    (frontier; long-running agents & coding)"
+      echo "  [3] claude-sonnet-4-6  (best speed / intelligence balance)"
+      echo "  [4] claude-haiku-4-5   (fastest, near-frontier)"
+      echo "  [5] other              (type a custom model id)"
+      printf "Choose [1-5] (default 3): "
+      read -r mc </dev/tty || mc=""
+      case "$mc" in
+        1) m="claude-opus-4-8" ;;
+        2) m="claude-opus-4-6" ;;
+        4) m="claude-haiku-4-5" ;;
+        5) printf "Model id: "; read -r m </dev/tty || m="" ;;
+        *) m="claude-sonnet-4-6" ;;
+      esac
+      [ -n "$m" ] && { set_env_var EVA_MODEL "$m"; did=1; }
+    fi
+    if is_placeholder "$(read_env_val EVA_API_KEY)" && is_placeholder "$(read_env_val ANTHROPIC_API_KEY)"; then
+      k="$(read_secret 'Anthropic API key (sk-ant-...) [hidden]')"
+      [ -n "$k" ] && { set_env_var EVA_API_KEY "$k"; did=1; }
+    fi
+  elif [ "$provider" = "openai_chat" ]; then
+    if is_placeholder "$(read_env_val EVA_ENDPOINT)" && is_placeholder "$(read_env_val LLM_ENDPOINT)"; then
+      printf "Chat Completions endpoint (Enter for https://api.openai.com/v1/chat/completions): "
+      read -r e </dev/tty || e=""; [ -z "$e" ] && e="https://api.openai.com/v1/chat/completions"
+      set_env_var EVA_ENDPOINT "$e"; did=1
+    fi
+    if is_placeholder "$(read_env_val EVA_MODEL)" && is_placeholder "$(read_env_val LLM_MODEL)"; then
+      printf "Model name (e.g. gpt-5.5, llama3.1): "
+      read -r m </dev/tty || m=""; [ -n "$m" ] && { set_env_var EVA_MODEL "$m"; did=1; }
+    fi
+    if is_placeholder "$(read_env_val EVA_API_KEY)" && is_placeholder "$(read_env_val LLM_API_KEY)" && is_placeholder "$(read_env_val OPENAI_API_KEY)"; then
+      k="$(read_secret "API key [hidden] (type 'ollama' for a local server)")"
+      [ -n "$k" ] && { set_env_var EVA_API_KEY "$k"; did=1; }
+    fi
+  fi
+
+  [ "$did" = "1" ] && { echo "Saved to .env - starting EVA..."; eva_env_tip; echo; }
+  return 0
+}
+
+case "$cmd" in
+  work|improve|review|evolve) eva_onboarding ;;
+esac
+
 case "$cmd" in
   build)    docker compose build ;;
   status)   eva status ;;
-  rollback) eva rollback ;;
+  rollback) eva rollback "$@" ;;
+  unlock)   eva unlock ;;
   reseed)
     # Drop the materialized runtime so the next start re-seeds v001 from seed/
     # (mounted), without an image rebuild. State/workspace are kept.
@@ -121,7 +240,8 @@ Usage: ./run.sh <command> [args]
   review  [task]        Read-only inspection
   paste                 Save a clipboard screenshot into data/workspace/ (needs pngpaste/wl-paste/xclip)
   evolve  [N] [flags]   Run N autonomous evolution rounds
-  rollback              Roll back to the last good release
+  rollback [--force]    Roll back to the last good release
+  unlock                Clear a dead evolution lock (single-writer guard)
   reseed                Re-seed v001 from seed/ (after editing the genome; no rebuild)
   shell                 Open a shell inside the container (debug)
 

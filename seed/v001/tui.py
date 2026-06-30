@@ -221,6 +221,22 @@ class StatusView:
         self._w(format_welcome(self.mode, self.identity, self.release,
                                color=self.color, usage=usage))
 
+    def session_overview(self, rows, current=None) -> None:
+        """Surface resumable work sessions on the start screen so the user can pick up a
+        prior session without running --list first. rows = [(id, n_events, first_task,
+        is_latest), ...]; the brand-new `current` session is excluded."""
+        others = [r for r in rows if r[0] != current]
+        if not others:
+            return
+        self._w(_paint("  Resume a previous session:", "bold", color=self.color))
+        for sid, n, first, is_latest in others[-6:]:
+            mark = _paint(" *", "green", color=self.color) if is_latest else "  "
+            meta = _paint(f"  {n} events  ", "gray", color=self.color)
+            self._w("  " + _paint(sid, "cyan", color=self.color) + mark + meta
+                    + _clip(first, 50))
+        self._w(_paint("  \u2192 work resume <id>   (or `work resume` for the most recent)",
+                       "gray", color=self.color) + "\n")
+
     def say(self, text: str) -> None:
         if self._streaming:
             # The text was already rendered live via on_say_delta; just close the line.
@@ -256,3 +272,32 @@ class StatusView:
             self._raw("\n")
             self._streaming = False
         self._w(format_error(stage, exc, color=self.color))
+
+    def replay(self, events, clean_user=None) -> None:
+        """Render a previously-saved conversation so a human RESUMING a session can pick
+        up the thread: prior user messages, EVA's replies and what it did (tool calls),
+        in order. Presentation only - it reads the loaded event log, runs nothing."""
+        self._w("\n" + _paint("\u2500\u2500 resuming \u00b7 previous conversation \u2500\u2500",
+                              "gray", color=self.color))
+        for ev in events:
+            role = getattr(ev, "role", "")
+            if role == "system":
+                continue
+            if role == "user":
+                text = getattr(ev, "content", "") or ""
+                if clean_user:
+                    text = clean_user(text)
+                text = text.strip()
+                if not text:
+                    continue
+                if len(text) > 2000:
+                    text = text[:2000].rstrip() + "\u2026"
+                self._w(_paint("\u276f you", "bold", "cyan", color=self.color) + " " + text)
+            elif role == "assistant":
+                say = (getattr(ev, "content", "") or "").strip()
+                if say:
+                    self._w(format_say(say, color=self.color))
+                for c in (getattr(ev, "tool_calls", None) or []):
+                    self._w(format_tool_call(c, color=self.color, full=self.full))
+        self._w(_paint("\u2500\u2500 end of previous conversation \u2500\u2500",
+                       "gray", color=self.color) + "\n")

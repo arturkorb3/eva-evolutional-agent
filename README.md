@@ -124,10 +124,14 @@ binaries on `PATH`, and HTTP via Python `urllib` or `node` `fetch` (there is no
 **Prerequisites:** Docker Desktop (Linux engine).
 
 ```powershell
-Copy-Item .env.example .env      # set EVA_MODEL + EVA_API_KEY (EVA_PROVIDER=openai_chat)
 .\run.ps1 build                  # build the hardened sandbox image
-.\run.ps1                        # start EVA (work mode); or: .\run.ps1 review
+.\run.ps1                        # start EVA — first run sets up .env interactively
 ```
+
+On the first run without a `.env`, the wrapper interviews you (provider → model from a
+numbered menu → masked API-key entry) and writes `.env`; if `.env` exists but a required
+value is missing, only that is asked. Prefer to do it by hand? Copy `.env.example` to
+`.env` (every option documented) and edit it. Skip the wizard with `EVA_NO_SETUP=1`.
 
 On Linux/macOS use `./run.sh` with the same commands. Other useful ones:
 
@@ -147,6 +151,13 @@ commands and output in the live view.
 `run.ps1 work`/`improve` auto-stages clipboard screenshots (`Win+Shift+S` →
 `/paste`); on the host, `/paste` reads the clipboard directly. Images are
 externalized to `data/state/blobs/` to keep the event log small.
+
+**Sessions.** Each `work` run is its own isolated session under
+`data/state/sessions/work/<id>/` (own event log + image blobs). The start screen lists
+resumable sessions; continue one with `work resume` (most recent) or `work resume <id>`,
+and `work --list` shows them all. On resume EVA replays the prior conversation so you can
+pick up the thread. `improve`/`review`/`evolve` stay single + mode-keyed, and
+self-evolution is serialized by a kernel lock (`unlock` clears a dead one).
 
 **Providers.** The core is provider-neutral; pick the adapter in `.env`:
 
