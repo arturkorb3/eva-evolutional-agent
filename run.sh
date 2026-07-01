@@ -270,7 +270,7 @@ case "$cmd" in
   shell)    docker compose "${COMPOSE_FILES[@]}" run --rm --entrypoint /bin/sh eva ;;
   *)
     cat <<'EOF'
-EVA - Evolutional Agent (Docker sandbox)
+EVA - Evolvable Virtual Agent (Docker sandbox)
 
 Usage: ./run.sh <command> [args]
 

@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/Eva-Logo-white.png" alt="EVA — Evolutional Agent" width="440">
+  <img src="docs/Eva-Logo-white.png" alt="EVA — Evolvable Virtual Agent" width="440">
 </p>
 
-# EVA — Evolutional Agent
+# EVA — **E**volvable **V**irtual **A**gent
 
 ![status](https://img.shields.io/badge/status-experimental-orange)
 ![python](https://img.shields.io/badge/python-3.12-blue)

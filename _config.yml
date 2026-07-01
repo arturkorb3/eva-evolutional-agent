@@ -1,6 +1,6 @@
 # GitHub Pages config. Wraps the rendered README in a layout that also renders
 # Mermaid diagrams (GitHub Pages/Jekyll does not render Mermaid by default).
-title: "EVA — Evolutional Agent"
+title: "EVA — Evolvable Virtual Agent"
 defaults:
   - scope:
       path: ""

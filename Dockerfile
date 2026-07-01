@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# EVA (Evolutional Agent) - secure sandbox image.
+# EVA (Evolvable Virtual Agent) - secure sandbox image.
 #
 # Only the tiny, non-evolving kernel (organism.py) is baked into the image.
 # Everything the organism evolves - releases, state and workspace - lives in

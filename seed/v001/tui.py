@@ -166,9 +166,9 @@ def _load_logo(max_cols: int) -> "str | None":
 def format_brand(*, color: bool = True, logo: "str | None" = None) -> str:
     if logo:
         return logo.rstrip("\n") + "\n" + _paint(
-            "  EVA · Evolutional Agent — self-improving · sandboxed", "gray", color=color)
+            "  EVA · Evolvable Virtual Agent — self-improving · sandboxed", "gray", color=color)
     lines = [_paint(l, "bold", "cyan", color=color) for l in _BRAND_ART]
-    lines.append(_paint("  Evolutional Agent · self-improving · sandboxed", "gray", color=color))
+    lines.append(_paint("  Evolvable Virtual Agent · self-improving · sandboxed", "gray", color=color))
     return "\n".join(lines)
 
 

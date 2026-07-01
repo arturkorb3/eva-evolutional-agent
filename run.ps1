@@ -325,7 +325,7 @@ Write-Output 'OK'
     "shell" { $files = $script:ComposeFiles; docker compose @files run --rm --entrypoint /bin/sh eva }
     default {
         @"
-EVA - Evolutional Agent (Docker sandbox)
+EVA - Evolvable Virtual Agent (Docker sandbox)
 
 Usage: .\run.ps1 <command> [args]
 
