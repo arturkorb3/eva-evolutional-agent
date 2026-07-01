@@ -449,6 +449,27 @@ def _parse_ddg(page: str, limit: int) -> list:
 
 
 # --------------------------------------------------------------------------- #
+# Consistent "human declined" feedback
+# --------------------------------------------------------------------------- #
+def _declined(call: ToolCall, action: str) -> ToolObservation:
+    """Turn a human 'no' into an observation the model can act on sensibly.
+
+    A terse "rejected." made the model re-request the SAME action in a loop. This
+    tells it plainly that the human made a deliberate choice, so the right move is
+    to acknowledge it, NOT retry the identical call, and ask what the person would
+    prefer (a different approach, a narrower step, or moving on) - or just answer
+    without the tool."""
+    return ToolObservation(
+        call.id, call.name,
+        f"The human declined this {action}. This was a deliberate choice, not an "
+        f"error. Do NOT repeat the same request. Acknowledge the decision, briefly "
+        f"say what you were trying to achieve, and ask how they would like to "
+        f"proceed instead (a different approach, a smaller step, or skip it) - or "
+        f"continue without this tool if you can.",
+    )
+
+
+# --------------------------------------------------------------------------- #
 # The runtime
 # --------------------------------------------------------------------------- #
 class ShellToolRuntime:
@@ -543,7 +564,7 @@ class ShellToolRuntime:
         # The command is shown compactly on the activity (▸) line; the FULL command is
         # passed as detail so the human can reveal it with 'f' before approving.
         if not self.approval.approve(risk, "Approve shell?", detail=cmd):
-            return ToolObservation(call.id, call.name, "Shell rejected.")
+            return _declined(call, "shell command")
 
         try:
             timeout = int(call.arguments.get("timeout", 60))
@@ -598,7 +619,7 @@ class ShellToolRuntime:
             preview = content if len(content) <= 4000 else content[:4000] + "\n...(truncated)"
             detail += "\n\n" + preview
         if not self.approval.approve(RISK_WRITE, "Approve file write?", detail=detail):
-            return ToolObservation(call.id, call.name, "File write rejected.")
+            return _declined(call, "file write")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         if target.suffix == ".py":
@@ -655,7 +676,7 @@ class ShellToolRuntime:
                                    "surrounding context to make it unique.")
         detail = f"edit {target}\n  - {old.strip()[:400]}\n  + {new.strip()[:400]}"
         if not self.approval.approve(RISK_WRITE, "Approve file edit?", detail=detail):
-            return ToolObservation(call.id, call.name, "File edit rejected.")
+            return _declined(call, "file edit")
         target.write_text(text.replace(old, new, 1), encoding="utf-8")
         if target.suffix == ".py":
             try:
@@ -712,7 +733,7 @@ class ShellToolRuntime:
                                        f"line {exc.lineno}); nothing written.")
         detail = f"apply_patch {target}  ({len(edits)} edits)\n" + "\n".join(previews)
         if not self.approval.approve(RISK_WRITE, "Approve file patch?", detail=detail):
-            return ToolObservation(call.id, call.name, "File patch rejected.")
+            return _declined(call, "file patch")
         target.write_text(working, encoding="utf-8")
         if target.suffix == ".py":
             try:
@@ -808,7 +829,7 @@ class ShellToolRuntime:
                                    f"Candidate already exists: {name} (edit it, or pick another name).")
         if not self.approval.approve(RISK_WRITE, "Approve create candidate?",
                                      detail=f"clone {active} -> {name}"):
-            return ToolObservation(call.id, call.name, "Create candidate rejected.")
+            return _declined(call, "candidate-release creation")
         try:
             shutil.copytree(src, dst,
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -891,7 +912,7 @@ class ShellToolRuntime:
         reason = str(call.arguments.get("reason", "") or "")
         if not self.approval.approve(RISK_PROMOTE, "Approve promotion request?",
                                      detail=f"promote {name}"):
-            return ToolObservation(call.id, call.name, "Promotion request rejected.")
+            return _declined(call, "promotion request")
 
         self.state.mkdir(parents=True, exist_ok=True)
         (self.state / "promotion_request.json").write_text(json.dumps({
