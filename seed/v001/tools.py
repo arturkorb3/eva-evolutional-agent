@@ -456,13 +456,28 @@ class ShellToolRuntime:
 
     def __init__(self, *, workspace: pathlib.Path, approval: ApprovalPolicy,
                  human: HumanInterface, releases: "pathlib.Path | None" = None,
-                 state: "pathlib.Path | None" = None, max_output: int = 6000):
+                 state: "pathlib.Path | None" = None, max_output: int = 6000,
+                 progress=None):
         self.workspace = pathlib.Path(workspace)
         self.approval = approval
         self.human = human
         self.releases = pathlib.Path(releases) if releases else None
         self.state = pathlib.Path(state) if state else None
         self.max_output = max_output
+        # Optional presentation hook: called (with the tool name) right before a slow op
+        # runs (AFTER approval), so the TUI can show a live elapsed timer. Never affects
+        # behaviour and is only wired by the CLI.
+        self._progress = progress
+
+    def set_progress(self, callback) -> None:
+        self._progress = callback
+
+    def _running(self, name: str) -> None:
+        if self._progress:
+            try:
+                self._progress(name)
+            except Exception:
+                pass
 
     def execute(self, call: ToolCall, mode: str) -> ToolObservation:
         if call.name == "finish":
@@ -534,6 +549,7 @@ class ShellToolRuntime:
         except (TypeError, ValueError):
             timeout = 60
 
+        self._running("shell")
         r = subprocess.run(
             cmd, cwd=str(self.workspace), shell=True,
             capture_output=True, text=True, timeout=timeout,
@@ -717,6 +733,7 @@ class ShellToolRuntime:
             max_chars = int(call.arguments.get("max_chars", 6000))
         except (TypeError, ValueError):
             max_chars = 6000
+        self._running("fetch_url")
         try:
             req = urllib.request.Request(url, headers={"User-Agent": _HTTP_UA})
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -743,6 +760,7 @@ class ShellToolRuntime:
         except (TypeError, ValueError):
             max_results = 5
         max_results = max(1, min(max_results, 10))
+        self._running("web_search")
         try:
             data = urllib.parse.urlencode({"q": query}).encode()
             req = urllib.request.Request("https://html.duckduckgo.com/html/",
@@ -813,6 +831,7 @@ class ShellToolRuntime:
         tests = self.releases.resolve() / name / "tests.py"
         if not tests.is_file():
             return ToolObservation(call.id, call.name, f"No tests.py in {name}")
+        self._running("run_tests")
         try:
             r = subprocess.run([sys.executable, str(tests), "--self"],
                                cwd=str(tests.parent), capture_output=True, text=True,

@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 
 try:  # comfort only: stdlib on Linux/macOS (present in the slim Docker image),
     import readline as _readline  # absent on bare Windows. NEVER a hard dependency.
@@ -146,8 +148,71 @@ def format_welcome(mode: str, identity: dict, release: str, *,
     return "\n".join(parts)
 
 
+def _is_table_row(s: str) -> bool:
+    s = s.strip()
+    return len(s) >= 2 and s.startswith("|") and s.endswith("|")
+
+
+def _is_table_sep(s: str) -> bool:
+    s = s.strip()
+    if not (s.startswith("|") and s.endswith("|")):
+        return False
+    inner = s.strip("|")
+    return "-" in inner and set(inner) <= set("-: |")
+
+
+def _render_table(block: list) -> str:
+    rows = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in block]
+    header, body = rows[0], rows[2:]      # rows[1] is the --- separator; drop it
+    ncols = max(len(r) for r in rows)
+
+    def pad(r):
+        return r + [""] * (ncols - len(r))
+
+    header, body = pad(header), [pad(r) for r in body]
+    widths = [0] * ncols
+    for r in [header] + body:
+        for i, c in enumerate(r):
+            widths[i] = max(widths[i], len(c))
+
+    def rule(left, mid, right):
+        return left + mid.join("\u2500" * (w + 2) for w in widths) + right
+
+    def row(r):
+        return "\u2502" + "\u2502".join(f" {c.ljust(widths[i])} " for i, c in enumerate(r)) + "\u2502"
+
+    out = [rule("\u250c", "\u252c", "\u2510"), row(header), rule("\u251c", "\u253c", "\u2524")]
+    out += [row(r) for r in body]
+    out.append(rule("\u2514", "\u2534", "\u2518"))
+    return "\n".join(out)
+
+
+def render_markdown_tables(text: str) -> str:
+    """Reformat GitHub-style markdown tables (`| a | b |` with a `---` separator row) into
+    aligned box tables for the terminal; non-table lines pass through unchanged. Pure
+    function, so it renders the same for live output, replay and finish summaries."""
+    lines = (text or "").split("\n")
+    out, i, n = [], 0, len(lines)
+    while i < n:
+        if _is_table_row(lines[i]) and i + 1 < n and _is_table_sep(lines[i + 1]):
+            block = [lines[i], lines[i + 1]]
+            i += 2
+            while i < n and _is_table_row(lines[i]):
+                block.append(lines[i])
+                i += 1
+            try:
+                out.append(_render_table(block))
+            except Exception:
+                out.extend(block)      # never let rendering swallow content
+        else:
+            out.append(lines[i])
+            i += 1
+    return "\n".join(out)
+
+
 def format_say(text: str, *, color: bool = True) -> str:
-    return _paint("● EVA ", "bold", "magenta", color=color) + (text or "").strip()
+    return _paint("● EVA ", "bold", "magenta", color=color) + \
+        render_markdown_tables((text or "").strip())
 
 
 def format_tool_call(call, *, color: bool = True, full: bool = False) -> str:
@@ -155,8 +220,8 @@ def format_tool_call(call, *, color: bool = True, full: bool = False) -> str:
     args = getattr(call, "arguments", {}) or {}
     if name == "finish":
         # finish carries EVA's final message to the user - show it IN FULL (preserving
-        # line breaks), never truncated like a mid-task activity gist.
-        summ = str(args.get("summary", "") or "done").strip()
+        # line breaks + rendering any markdown table), never truncated like a gist.
+        summ = render_markdown_tables(str(args.get("summary", "") or "done").strip())
         head = _paint("\u2713 finished", "bold", "green", color=color)
         return head + (": " + summ if summ else "")
     # ask_user questions are short and important - don't clip them as hard. Shell
@@ -319,6 +384,9 @@ class StatusView:
         # True while assistant text is being streamed live for the current turn, so
         # say() (the final reconcile) closes the open line instead of reprinting it.
         self._streaming = False
+        # Live elapsed-time spinner for long tool calls (real TTY only).
+        self._spin_stop = None
+        self._spin_thread = None
         # Lazily created comfortable input prompt (readline editing + history).
         self._prompt = None
 
@@ -337,6 +405,60 @@ class StatusView:
             self.stream.flush()
         except Exception:
             pass
+
+    def _tty(self) -> bool:
+        try:
+            return bool(self.stream.isatty())
+        except Exception:
+            return False
+
+    def _start_spinner(self, label: str) -> None:
+        # A background thread that, after a short quiet delay (so fast tools stay silent),
+        # shows a spinner + elapsed seconds on its own line. Real TTY only, so piped logs
+        # and tests stay clean and deterministic.
+        if not self._tty() or self._spin_stop is not None:
+            return
+        stop = threading.Event()
+        stream, color = self.stream, self.color
+
+        def run():
+            if stop.wait(1.0):
+                return
+            frames = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+            start, i = time.monotonic(), 0
+            while not stop.is_set():
+                el = time.monotonic() - start
+                msg = _paint(f"  {frames[i % len(frames)]} {label} {el:0.0f}s", "gray", color=color)
+                try:
+                    stream.write("\r" + msg + "   ")
+                    stream.flush()
+                except Exception:
+                    return
+                i += 1
+                if stop.wait(0.2):
+                    break
+            try:
+                stream.write("\r" + " " * 52 + "\r")
+                stream.flush()
+            except Exception:
+                pass
+
+        self._spin_stop = stop
+        self._spin_thread = threading.Thread(target=run, daemon=True)
+        self._spin_thread.start()
+
+    def _stop_spinner(self) -> None:
+        if self._spin_stop is not None:
+            self._spin_stop.set()
+        if self._spin_thread is not None:
+            self._spin_thread.join(timeout=1.5)
+        self._spin_stop = None
+        self._spin_thread = None
+
+    def tool_running(self, name: str = "") -> None:
+        """Called by the runtime AFTER approval, just before a potentially slow op runs, so
+        a long shell / fetch shows a live elapsed timer instead of a frozen screen."""
+        self._start_spinner(name or "running")
 
     def header(self) -> None:
         self._w(format_header(self.mode, self.identity, self.release, color=self.color))
@@ -376,9 +498,16 @@ class StatusView:
 
     def say(self, text: str) -> None:
         if self._streaming:
-            # The text was already rendered live via on_say_delta; just close the line.
-            self._raw("\n")
             self._streaming = False
+            clean = (text or "").strip()
+            # A raw streamed markdown table looks messy; on a real terminal, restore to the
+            # saved cursor, clear below, and reprint the cleanly rendered version. Otherwise
+            # just close the streamed line.
+            if self._tty() and render_markdown_tables(clean) != clean:
+                self._raw("\x1b[u\x1b[0J")
+                self._w(format_say(text, color=self.color))
+            else:
+                self._raw("\n")
             return
         if text and text.strip():
             self._w(format_say(text, color=self.color))
@@ -392,6 +521,9 @@ class StatusView:
             return
         if not self._streaming:
             self._streaming = True
+            # Save the cursor so say() can cleanly re-render a markdown table at reconcile.
+            if self._tty():
+                self._raw("\x1b[s")
             self._raw(_paint("● EVA ", "bold", "magenta", color=self.color))
         self._raw(chunk)
 
@@ -399,12 +531,14 @@ class StatusView:
         self._w(format_tool_call(call, color=self.color, full=self.full))
 
     def observation(self, obs) -> None:
+        self._stop_spinner()
         # finish is already shown as the tool-call line; don't echo it again.
         if (getattr(obs, "name", "") or "") == "finish":
             return
         self._w(format_observation(obs, color=self.color, full=self.full))
 
     def error(self, stage: str, exc) -> None:
+        self._stop_spinner()
         if self._streaming:
             self._raw("\n")
             self._streaming = False

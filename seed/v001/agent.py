@@ -570,6 +570,8 @@ def run_mode(mode: str, task: str):
     adapter = make_adapter()
     identity = adapter.identity() if hasattr(adapter, "identity") else {}
     view = StatusView(mode=mode, identity=identity, release=RELEASE.name)
+    # Show a live elapsed timer while a slow tool (shell/fetch/search/tests) runs.
+    runtime.set_progress(view.tool_running)
 
     system = system_for(mode, session.path)
     interactive = (not AUTO_YES) and mode in {"work", "improve", "review"}

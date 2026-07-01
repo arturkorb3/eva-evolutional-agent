@@ -1417,6 +1417,47 @@ def check_backlog_append_never_crashes_the_agent():
             (agent.BACKLOG, agent.STATE, agent.WORKSPACE, agent.RELEASES) = saved
 
 
+def check_tui_renders_markdown_tables():
+    """The TUI reformats GitHub-style markdown tables into aligned box tables (so LLM tables
+    render cleanly instead of raw pipes), passes non-table text through unchanged, keeps all
+    content, and format_say renders them too."""
+    import tui
+    md = "before\n| Name | Role |\n|---|---|\n| core | loop |\n| tui | view |\nafter"
+    out = tui.render_markdown_tables(md)
+    assert "before" in out and "after" in out                 # surrounding text kept
+    assert "\u250c" in out and "\u2502" in out and "\u2518" in out  # box-drawing chars
+    assert "|---|" not in out                                  # raw separator row gone
+    assert all(w in out for w in ("core", "loop", "tui", "view"))
+    box = [l for l in out.splitlines() if l.startswith("\u2502")]  # header + body rows
+    assert len({len(l) for l in box}) == 1, box               # aligned to one width
+    assert tui.render_markdown_tables("just a line\nno table") == "just a line\nno table"
+    assert "\u250c" in tui.format_say(md, color=False)
+
+
+def check_tool_progress_hook_and_spinner_are_tty_gated():
+    """The runtime calls its progress hook right before a slow op (so the TUI can show a live
+    elapsed timer during a long shell/fetch), and the TUI spinner writes NOTHING to a non-TTY
+    stream, so piped logs and these tests stay clean and deterministic."""
+    import io
+    import tui
+    with tempfile.TemporaryDirectory() as d:
+        seen = []
+        rt = tools_mod.ShellToolRuntime(
+            workspace=pathlib.Path(d),
+            approval=human_mod.ApprovalPolicy(human_mod.AutoHumanInterface(), mode="never"),
+            human=human_mod.AutoHumanInterface())
+        rt.set_progress(lambda name: seen.append(name))
+        rt.execute(core.ToolCall("1", "shell", {"cmd": "echo hi"}), "work")
+        assert "shell" in seen, seen
+    buf = io.StringIO()
+    v = tui.StatusView(mode="work", stream=buf, color=False)
+    v.tool_running("shell")   # StringIO.isatty() is False -> no spinner thread
+    v.observation(core.ToolObservation("1", "shell", "exit=0\nstdout:\nhi"))
+    out = buf.getvalue()
+    assert "\r" not in out and "0s" not in out    # no spinner artifacts on a non-TTY
+    assert "exit=0" in out                          # the observation still renders
+
+
 def check_prompt_warns_about_missing_optional_binaries():
     """The runtime environment prompt prevents repeated exit=127 friction by telling
     EVA that common utilities may be absent, to verify optional binaries before use,
