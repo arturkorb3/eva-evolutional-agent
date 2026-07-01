@@ -54,16 +54,30 @@ registry, planner, memory) and improve via prompts/config. EVA ships the
 
 ## The idea in one picture
 
-```
-bootstrap (once)
-  organism.py ──seeds──▶ seed/v001 ──materialize──▶ runtime/releases/v1
- (immutable kernel)       (genome, hash-pinned)        (first live release)
+```mermaid
+flowchart TB
+    subgraph boot["bootstrap · runs once"]
+        direction LR
+        K["<b>organism.py</b><br/>immutable kernel"] -->|seeds| S["<b>seed/v001</b><br/>genome · hash-pinned"]
+        S -->|"verify SHA-256<br/>+ materialize"| R["<b>runtime/releases/v1</b><br/>first live release"]
+    end
 
-evolution loop
-  runtime/releases/vN ──EVA edits──▶ vN-candidate ──gates──▶ promote ──▶ vN+1
-        ▲                                                                  │
-        └──── vN+1 becomes the live release · rollback steps back ─────────┘
-                        (every promotion recorded in the ledger)
+    R ==> VN
+
+    subgraph loop["evolution loop"]
+        direction LR
+        VN["runtime/releases/<b>vN</b><br/>live release"] -->|EVA edits itself| C["<b>vN-candidate</b>"]
+        C -->|verify| G{"gates<br/>tests · ratchet<br/>kernel_gate"}
+        G -->|"pass → promote"| VN1["<b>vN+1</b><br/>new live release"]
+        G -->|fail → discard| VN
+        VN1 -->|becomes the live vN| VN
+        VN1 -.->|rollback via ledger| VN
+    end
+
+    classDef immutable stroke:#e11d48,stroke-width:2px;
+    classDef gate stroke:#2563eb,stroke-width:2px;
+    class K immutable;
+    class G gate;
 ```
 
 - **`organism.py`** is the kernel: ~600 lines, baked into the image, **not**
