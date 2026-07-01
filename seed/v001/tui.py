@@ -384,6 +384,12 @@ class StatusView:
         # True while assistant text is being streamed live for the current turn, so
         # say() (the final reconcile) closes the open line instead of reprinting it.
         self._streaming = False
+        # Line-buffered streaming state, so a markdown table can be rendered inline as a
+        # clean box table the moment it completes (no cursor tricks, no duplication).
+        self._sbuf = ""
+        self._hold = None
+        self._tbl = None
+        self._said_prefix = False
         # Live elapsed-time spinner for long tool calls (real TTY only).
         self._spin_stop = None
         self._spin_thread = None
@@ -497,35 +503,84 @@ class StatusView:
                        "gray", color=self.color) + "\n")
 
     def say(self, text: str) -> None:
+        # Reconcile the end of a streamed turn: flush any buffered partial line, a held
+        # table candidate and an open table, then reset.
         if self._streaming:
-            self._streaming = False
-            clean = (text or "").strip()
-            # A raw streamed markdown table looks messy; on a real terminal, restore to the
-            # saved cursor, clear below, and reprint the cleanly rendered version. Otherwise
-            # just close the streamed line.
-            if self._tty() and render_markdown_tables(clean) != clean:
-                self._raw("\x1b[u\x1b[0J")
+            if self._sbuf:
+                self._feed_line(self._sbuf)
+                self._sbuf = ""
+            if self._hold is not None:
+                self._emit_line(self._hold)
+                self._hold = None
+            if self._tbl is not None:
+                self._flush_table()
+            if not self._said_prefix and text and text.strip():
                 self._w(format_say(text, color=self.color))
-            else:
-                self._raw("\n")
+            self._streaming = False
+            self._said_prefix = False
             return
         if text and text.strip():
             self._w(format_say(text, color=self.color))
 
     def on_say_delta(self, chunk: str) -> None:
-        """Render an assistant text fragment as it streams in. The first chunk of a
-        turn prints the '● EVA ' prefix once; say() later closes the line. Tool calls
-        are NOT streamed here - only free text, which is the only thing worth showing
-        token-by-token."""
+        """Render an assistant text fragment as it streams in, LINE-BUFFERED so a markdown
+        table can be shown as a clean box table (not raw pipes) the moment it completes -
+        no cursor tricks, no duplication. Prose lines stream as they finish. Tool calls are
+        NOT streamed here; only free text."""
         if not chunk:
             return
         if not self._streaming:
             self._streaming = True
-            # Save the cursor so say() can cleanly re-render a markdown table at reconcile.
-            if self._tty():
-                self._raw("\x1b[s")
+            self._sbuf = ""
+            self._hold = None
+            self._tbl = None
+            self._said_prefix = False
+        self._sbuf += chunk
+        while "\n" in self._sbuf:
+            line, self._sbuf = self._sbuf.split("\n", 1)
+            self._feed_line(line)
+
+    def _feed_line(self, line: str) -> None:
+        # A tiny state machine over completed lines: collect a markdown-table block (header
+        # + `---` separator + rows) and render it as a box table; stream every other line as
+        # prose. One line of lookahead is needed (a `|...|` line is only a table once the
+        # NEXT line is the separator), hence the held candidate.
+        if self._tbl is not None:
+            if _is_table_row(line):
+                self._tbl.append(line)
+                return
+            self._flush_table()
+        if self._hold is not None:
+            if _is_table_sep(line):
+                self._tbl = [self._hold, line]
+                self._hold = None
+                return
+            self._emit_line(self._hold)
+            self._hold = None
+        if _is_table_row(line):
+            self._hold = line
+        else:
+            self._emit_line(line)
+
+    def _emit_line(self, line: str) -> None:
+        if not self._said_prefix:
             self._raw(_paint("● EVA ", "bold", "magenta", color=self.color))
-        self._raw(chunk)
+            self._said_prefix = True
+        self._w(line)
+
+    def _flush_table(self) -> None:
+        if self._tbl is None:
+            return
+        if not self._said_prefix:
+            self._raw(_paint("● EVA ", "bold", "magenta", color=self.color))
+            self._said_prefix = True
+            self._raw("\n")
+        try:
+            self._w(_render_table(self._tbl))
+        except Exception:
+            for row in self._tbl:
+                self._w(row)
+        self._tbl = None
 
     def tool_call(self, call) -> None:
         self._w(format_tool_call(call, color=self.color, full=self.full))

@@ -1458,6 +1458,26 @@ def check_tool_progress_hook_and_spinner_are_tty_gated():
     assert "exit=0" in out                          # the observation still renders
 
 
+def check_tui_streams_table_inline_without_duplication():
+    """A STREAMED message that contains a markdown table renders it as exactly ONE clean box
+    table inline (line-buffered), with no duplicate raw+rendered copy and no cursor-escape
+    codes - so it is robust on terminals that ignore cursor save/restore (the live bug)."""
+    import io
+    import tui
+    buf = io.StringIO()
+    v = tui.StatusView(mode="work", stream=buf, color=False)
+    msg = "Result:\n| A | B |\n|---|---|\n| 1 | 2 |\n"
+    for i in range(0, len(msg), 5):            # arbitrary chunk boundaries
+        v.on_say_delta(msg[i:i + 5])
+    v.say(msg.strip())
+    out = buf.getvalue()
+    assert out.count("\u250c") == 1 and out.count("\u2518") == 1   # exactly ONE box table
+    assert "|---|" not in out                                       # raw separator gone
+    assert out.count("Result:") == 1                                # prose once, not duplicated
+    assert out.count("\u2502 1 ") == 1                              # body row rendered once
+    assert "\x1b[u" not in out and "\x1b[s" not in out              # no cursor-restore tricks
+
+
 def check_prompt_warns_about_missing_optional_binaries():
     """The runtime environment prompt prevents repeated exit=127 friction by telling
     EVA that common utilities may be absent, to verify optional binaries before use,
