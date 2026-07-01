@@ -15,7 +15,7 @@ single **seed** release; from there EVA can rewrite, test, and promote new versi
 *itself* inside a hardened Docker sandbox — every self-change a **gated, reversible**
 step, never live surgery on a running system.
 
-![EVA start screen](docs/eva-start.png)
+![EVA — a work session](docs/Eva-work.gif)
 
 ## What EVA is — and isn't
 
@@ -37,6 +37,20 @@ or policies.
 The seed is deliberately the **smallest viable organism plus an immune system**
 (gates, ratchet, policies, manifest hashes), not a product. New organs are
 *earned* through use, then optionally folded back into a later seed.
+
+## How EVA differs
+
+Most autonomous-agent projects ship a **fixed architecture** (gateway, skill
+registry, planner, memory) and improve via prompts/config. EVA ships the
+**mechanism to grow one safely**:
+
+| | Most agent frameworks | EVA |
+|---|---|---|
+| Architecture | fixed, shipped up front | a generation-0 **seed** EVA can rewrite |
+| Self-improvement | prompt/config tweaks | rewrites its own **code** as a gated release |
+| Safety of self-change | manual / none | ratchet + independent **kernel gate** + rollback ledger |
+| New capability | you code a plugin | **earned from real usage**, then promoted |
+| First run | keys & services | `EVA_PROVIDER=fake` or local Ollama — one command |
 
 ## The idea in one picture
 
@@ -102,6 +116,8 @@ task, EVA asks for your first message; reply after each turn; empty line or
 | `reseed` | Re-seed `v001` from `seed/` after editing the genome (no rebuild — the seed is mounted). |
 
 ## How it evolves
+
+![EVA evolving itself — candidate → gates → promote](docs/Eva-evolve.gif)
 
 Every session feeds a persistent **friction backlog** (`data/state/backlog.jsonl`):
 real shell/model failures are recorded with an error-specific signature.
