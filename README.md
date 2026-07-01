@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/Eva-Logo.png" alt="EVA — Evolutional Agent" width="440">
+  <img src="docs/Eva-Logo-white.png" alt="EVA — Evolutional Agent" width="440">
 </p>
 
 # EVA — Evolutional Agent
