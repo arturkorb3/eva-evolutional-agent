@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/Eva-Logo.png" alt="EVA — Evolutional Agent" width="440">
+</p>
+
 # EVA — Evolutional Agent
 
 ![status](https://img.shields.io/badge/status-experimental-orange)
