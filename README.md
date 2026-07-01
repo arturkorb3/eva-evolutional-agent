@@ -125,6 +125,12 @@ Usefulness is *grown from real failures*, not designed up front. When the same
 friction recurs (default 3×), EVA offers to **pivot** to an `improve` cycle aimed
 at the root cause — a clean phase change, never live mutation.
 
+Beyond failures, EVA also learns from **user needs**: when a request reveals a
+capability it lacks (or can only do awkwardly), it records it with a stable
+signature (`note_evolution_need`). A one-off is just handled; only a need that
+**recurs** — tracked across sessions — is proposed as a real skill to build and
+promote. New abilities are *earned from what you actually keep asking for*.
+
 A self-change only goes live after it clears the gates — the LLM-free checks
 (including **golden traces** that drive the real provider adapters over recorded
 responses) and three standing guarantees:
