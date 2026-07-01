@@ -1478,6 +1478,19 @@ def check_tui_streams_table_inline_without_duplication():
     assert "\x1b[u" not in out and "\x1b[s" not in out              # no cursor-restore tricks
 
 
+def check_tui_table_wraps_wide_cells():
+    """A very long cell entry is WRAPPED so the box table stays within the width budget and
+    its borders keep lining up, instead of overflowing and looking broken."""
+    import tui
+    block = ["| Col | Detail |", "|---|---|", "| x | " + "word " * 30 + "|"]
+    out = tui._render_table(block, max_width=40)
+    rows = out.splitlines()
+    assert max(len(r) for r in rows) <= 40                 # fits the width budget
+    assert len({len(r) for r in rows}) == 1                # every line (incl. wrapped) aligned
+    assert out.count("\u250c") == 1 and out.count("\u2518") == 1   # still exactly one clean box
+    assert out.count("word") >= 2                          # the long cell wrapped over lines
+
+
 def check_prompt_warns_about_missing_optional_binaries():
     """The runtime environment prompt prevents repeated exit=127 friction by telling
     EVA that common utilities may be absent, to verify optional binaries before use,

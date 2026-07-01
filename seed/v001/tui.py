@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
+import textwrap
 import threading
 import time
 
@@ -161,7 +163,26 @@ def _is_table_sep(s: str) -> bool:
     return "-" in inner and set(inner) <= set("-: |")
 
 
-def _render_table(block: list) -> str:
+def _term_width(default: int = 100) -> int:
+    try:
+        w = shutil.get_terminal_size((default, 24)).columns
+        return w if isinstance(w, int) and w > 20 else default
+    except Exception:
+        return default
+
+
+def _wrap_cell(text: str, width: int) -> list:
+    # Wrap one cell to its column width so a very long entry no longer blows the table
+    # past the terminal and breaks its borders. Long unbreakable tokens (e.g. URLs) are
+    # hard-split. Returns at least one (possibly empty) line.
+    lines: list = []
+    for para in str(text or "").split("\n"):
+        lines.extend(textwrap.wrap(para, width=max(1, width),
+                                   break_long_words=True, break_on_hyphens=False) or [""])
+    return lines or [""]
+
+
+def _render_table(block: list, max_width: "int | None" = None) -> str:
     rows = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in block]
     header, body = rows[0], rows[2:]      # rows[1] is the --- separator; drop it
     ncols = max(len(r) for r in rows)
@@ -175,14 +196,32 @@ def _render_table(block: list) -> str:
         for i, c in enumerate(r):
             widths[i] = max(widths[i], len(c))
 
+    # Keep the whole table within the terminal (or a given max) width: shrink the widest
+    # columns and WRAP their cells instead of letting a huge entry break the borders.
+    if max_width is None:
+        max_width = _term_width()
+    budget = max(max_width - (3 * ncols + 1), ncols * 6)
+    while sum(widths) > budget and max(widths) > 6:
+        widths[widths.index(max(widths))] -= 1
+
     def rule(left, mid, right):
         return left + mid.join("\u2500" * (w + 2) for w in widths) + right
 
-    def row(r):
-        return "\u2502" + "\u2502".join(f" {c.ljust(widths[i])} " for i, c in enumerate(r)) + "\u2502"
+    def render_row(cells):
+        wrapped = [_wrap_cell(cells[i], widths[i]) for i in range(ncols)]
+        height = max(len(w) for w in wrapped)
+        out = []
+        for k in range(height):
+            segs = [(wrapped[i][k] if k < len(wrapped[i]) else "").ljust(widths[i])
+                    for i in range(ncols)]
+            out.append("\u2502" + "\u2502".join(f" {s} " for s in segs) + "\u2502")
+        return out
 
-    out = [rule("\u250c", "\u252c", "\u2510"), row(header), rule("\u251c", "\u253c", "\u2524")]
-    out += [row(r) for r in body]
+    out = [rule("\u250c", "\u252c", "\u2510")]
+    out += render_row(header)
+    out.append(rule("\u251c", "\u253c", "\u2524"))
+    for r in body:
+        out += render_row(r)
     out.append(rule("\u2514", "\u2534", "\u2518"))
     return "\n".join(out)
 
