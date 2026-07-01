@@ -42,6 +42,14 @@ function Invoke-Eva {
     docker compose @files run --rm eva @EvaArgs
 }
 
+function Repair-DataPermissions {
+    # A FREE (root) session can leave root-owned files in ./data that the default non-root
+    # SAFE container then cannot write (seen as PermissionError on state/backlog.jsonl).
+    # Reset ownership to the sandbox uid via a one-shot root (free) container.
+    docker compose -f docker-compose.yml -f docker-compose.free.yml run --rm `
+        --entrypoint chown eva -R 10001:10001 /eva/runtime /eva/state /eva/workspace /eva/.local | Out-Null
+}
+
 function Start-ClipboardWatcher {
     # Seamless paste: while a session runs, watch the host clipboard and auto-stage
     # any NEW screenshot into data/workspace/ as clip-<timestamp>.png. Inside the
@@ -240,6 +248,11 @@ switch ($Command) {
     "status" { Invoke-Eva @("status") }
     "rollback" { Invoke-Eva (@("rollback") + $Rest) }
     "unlock" { Invoke-Eva @("unlock") }
+    "fix-perms" {
+        Write-Host "Resetting ./data ownership to the sandbox user (10001) - undoes a prior free-mode run..."
+        Repair-DataPermissions
+        Write-Host "Done."
+    }
     "reseed" {
         # Drop the materialized runtime so the next start re-seeds v001 from
         # seed/ (mounted), without an image rebuild. State/workspace are kept.
@@ -327,6 +340,7 @@ Usage: .\run.ps1 <command> [args]
   unlock                Clear a dead evolution lock (single-writer guard)
   reseed                Re-seed v001 from seed/ (after editing the genome; no rebuild)
   shell                 Open a shell inside the container (debug)
+  fix-perms             Reset ./data ownership to the sandbox user (after a -Free run)
 
 Sandbox mode:
   -Free <command>       Run in the FREE sandbox (writable rootfs + root + apt) instead of
@@ -340,4 +354,10 @@ Autonomous (no per-step approval; safe because Docker contains it):
 Everything the organism evolves is on the host under .\data\
 "@ | Write-Host
     }
+}
+
+# A FREE (root) session can leave root-owned files in ./data that break the next SAFE run;
+# reset ownership afterwards so safe mode keeps working.
+if ($Free -and $Command -in @("work", "improve", "review", "evolve", "shell")) {
+    Repair-DataPermissions
 }

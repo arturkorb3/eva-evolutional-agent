@@ -1398,6 +1398,25 @@ def check_env_capabilities_is_sandbox_aware():
     assert agent.ENV_CAPABILITIES == agent.env_capabilities(agent.SANDBOX)
 
 
+def check_backlog_append_never_crashes_the_agent():
+    """The friction backlog is best-effort: a write failure must NOT propagate and kill the
+    agent mid-run (seen live as PermissionError on state/backlog.jsonl after a free-mode run
+    left root-owned files). backlog_append swallows the error and continues."""
+    import agent
+    saved = (agent.BACKLOG, agent.STATE, agent.WORKSPACE, agent.RELEASES)
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        agent.STATE, agent.WORKSPACE, agent.RELEASES = root, root / "ws", root / "rel"
+        # a DIRECTORY at the backlog path makes open('a') raise - it must be swallowed
+        bad = root / "backlog.jsonl"
+        bad.mkdir()
+        agent.BACKLOG = bad
+        try:
+            agent.backlog_append({"kind": "x", "signature": "y"})  # must not raise
+        finally:
+            (agent.BACKLOG, agent.STATE, agent.WORKSPACE, agent.RELEASES) = saved
+
+
 def check_prompt_warns_about_missing_optional_binaries():
     """The runtime environment prompt prevents repeated exit=127 friction by telling
     EVA that common utilities may be absent, to verify optional binaries before use,

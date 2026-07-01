@@ -397,11 +397,17 @@ def ensure_dirs():
 
 
 def backlog_append(entry: dict) -> None:
-    ensure_dirs()
-    record = {"time": time.time(), "release": str(RELEASE)}
-    record.update(entry)
-    with BACKLOG.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    # The friction backlog is BEST-EFFORT memory and never on the critical path: a write
+    # failure (a root-owned file left by a free-mode run, a read-only fs, disk full) must
+    # NOT crash the agent mid-run. Degrade quietly.
+    try:
+        ensure_dirs()
+        record = {"time": time.time(), "release": str(RELEASE)}
+        record.update(entry)
+        with BACKLOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def _iter_backlog():

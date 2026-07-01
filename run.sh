@@ -10,6 +10,7 @@ mkdir -p data/runtime data/state data/workspace data/local
 COMPOSE_FILES=(-f docker-compose.yml)
 if [[ "${1:-}" == "--free" ]]; then
   COMPOSE_FILES+=(-f docker-compose.free.yml)
+  FREE=1
   shift
   printf '\n  !! EVA FREE sandbox: writable rootfs + root + apt inside the container.\n' >&2
   printf '     Bigger blast radius (still contained to the container + ./data; ephemeral).\n' >&2
@@ -23,6 +24,13 @@ shift || true
 # First-run onboarding (interactive .env setup) runs just before dispatch, below.
 
 eva() { docker compose "${COMPOSE_FILES[@]}" run --rm eva "$@"; }
+
+# A FREE (root) session can leave root-owned files in ./data that the default non-root
+# SAFE container then cannot write. Reset ownership via a one-shot root (free) container.
+repair_data_permissions() {
+  docker compose -f docker-compose.yml -f docker-compose.free.yml run --rm \
+    --entrypoint chown eva -R 10001:10001 /eva/runtime /eva/state /eva/workspace /eva/.local >/dev/null
+}
 
 # Best-effort clipboard image grab (writes a PNG to $1; returns 0 on success).
 eva_clip_grab() {
@@ -205,6 +213,11 @@ case "$cmd" in
   status)   eva status ;;
   rollback) eva rollback "$@" ;;
   unlock)   eva unlock ;;
+  fix-perms)
+    echo "Resetting ./data ownership to the sandbox user (10001) - undoes a prior free-mode run..."
+    repair_data_permissions
+    echo "Done."
+    ;;
   reseed)
     # Drop the materialized runtime so the next start re-seeds v001 from seed/
     # (mounted), without an image rebuild. State/workspace are kept.
@@ -255,6 +268,7 @@ Usage: ./run.sh <command> [args]
   unlock                Clear a dead evolution lock (single-writer guard)
   reseed                Re-seed v001 from seed/ (after editing the genome; no rebuild)
   shell                 Open a shell inside the container (debug)
+  fix-perms             Reset ./data ownership to the sandbox user (after a --free run)
 
 Sandbox mode:
   --free <command>      Run in the FREE sandbox (writable rootfs + root + apt) instead of
@@ -269,3 +283,9 @@ Everything the organism evolves is on the host under ./data/
 EOF
     ;;
 esac
+
+# A FREE (root) session can leave root-owned files in ./data that break the next SAFE run;
+# reset ownership afterwards so safe mode keeps working.
+if [[ "${FREE:-}" == 1 ]] && [[ "$cmd" =~ ^(work|improve|review|evolve|shell)$ ]]; then
+  repair_data_permissions
+fi
