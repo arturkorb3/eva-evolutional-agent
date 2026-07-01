@@ -75,9 +75,10 @@ INSPECT_SELF_TOOL = Tool(
     name="inspect_self",
     description="Read your OWN self-model on demand - you are a self-evolving agent "
                 "and are not preloaded with full docs. Returns your anatomy "
-                "(file->role), skills (tools), ratchet-pinned capabilities, or the "
-                "per-mode security policy. `topic` selects the slice: 'overview' "
-                "(default), 'anatomy', 'skills', 'capabilities', 'policy', or the name "
+                "(file->role), skills (tools), ratchet-pinned capabilities, the "
+                "per-mode security policy, or the current sandbox (safe/free). `topic` "
+                "selects the slice: 'overview' (default), 'anatomy', 'skills', "
+                "'capabilities', 'policy', 'sandbox', or the name "
                 "of a file/capability/skill for detail (a filename also returns that "
                 "module's docstring). Use it before editing yourself so you target the "
                 "right file.",

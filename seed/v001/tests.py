@@ -1398,6 +1398,31 @@ def check_env_capabilities_is_sandbox_aware():
     assert agent.ENV_CAPABILITIES == agent.env_capabilities(agent.SANDBOX)
 
 
+def check_self_model_exposes_sandbox():
+    """EVA's self-model exposes the SANDBOX containment level (safe/free) via inspect_self -
+    both as its own topic and appended to the `policy` view - so EVA knows 'free' is a
+    launch-time sandbox (root+apt), NOT a 5th agent mode. (Closes the live confusion where
+    inspect_self policy only listed the four modes.)"""
+    import os
+    import self_model as sm
+    old = os.environ.get("EVA_SANDBOX")
+    try:
+        os.environ["EVA_SANDBOX"] = "free"
+        assert "free" in sm.sandbox().lower() and "apt" in sm.sandbox().lower()
+        assert "free" in sm.lookup("sandbox").lower()
+        os.environ["EVA_SANDBOX"] = "safe"
+        s = sm.sandbox().lower()
+        assert "safe" in s and "not an agent mode" in s
+        # the policy view (where EVA looked when confused) now names the sandbox too
+        pol = sm.lookup("policy").lower()
+        assert "sandbox" in pol
+    finally:
+        if old is None:
+            os.environ.pop("EVA_SANDBOX", None)
+        else:
+            os.environ["EVA_SANDBOX"] = old
+
+
 def check_backlog_append_never_crashes_the_agent():
     """The friction backlog is best-effort: a write failure must NOT propagate and kill the
     agent mid-run (seen live as PermissionError on state/backlog.jsonl after a free-mode run

@@ -178,8 +178,8 @@ def brief(release: pathlib.Path | None = None) -> str:
         f"there is no separate external program. You are NOT preloaded with full "
         f"docs: read your own anatomy, {len(skills(release))} skills and "
         f"{len(capabilities(release))} ratchet-pinned capabilities ON DEMAND via the "
-        f"inspect_self tool (topics: overview | anatomy | skills | capabilities | a "
-        f"policy | a filename | a capability name)."
+        f"inspect_self tool (topics: overview | anatomy | skills | capabilities | "
+        f"policy | sandbox | a filename | a capability name)."
     )
 
 
@@ -211,6 +211,23 @@ def detail(topic: str, release: pathlib.Path | None = None) -> str:
             f"or the name of a file/capability/skill.")
 
 
+def sandbox(release: pathlib.Path | None = None) -> str:
+    """The current CONTAINMENT level (safe | free) - a launch-time SANDBOX, NOT an agent
+    mode. SAFE (default): read-only rootfs, non-root, no apt. FREE: writable rootfs + root
+    + apt (the user starts EVA with -Free / --free). Read from EVA_SANDBOX so EVA knows
+    whether it may install system packages - and that 'free' is a sandbox, not a 5th mode."""
+    mode = (os.environ.get("EVA_SANDBOX", "safe") or "safe").strip().lower()
+    if mode == "free":
+        return ("Sandbox: FREE (writable rootfs + root + apt). The user launched you in the "
+                "powerful sandbox, so you MAY `apt-get install` system packages/libraries. "
+                "This is a CONTAINMENT level chosen at launch, NOT an agent mode.")
+    return ("Sandbox: SAFE (read-only rootfs, non-root, no apt) - the default hardened "
+            "container. System packages/libraries CANNOT be installed here; that needs the "
+            "'free' sandbox (the user launches with -Free / --free) or an image change. It "
+            "is a CONTAINMENT level, NOT an agent mode (the modes are work/review/improve/"
+            "evolve).")
+
+
 def lookup(topic: str | None = None, release: pathlib.Path | None = None) -> str:
     """Single entry point for on-demand self-inspection (used by the inspect_self
     tool). Routes a topic word to the right slice of the self-model."""
@@ -237,7 +254,11 @@ def lookup(topic: str | None = None, release: pathlib.Path | None = None) -> str
         for mode, perms in pol.items():
             allowed = [k for k, v in perms.items() if v] or ["read-only"]
             lines.append(f"  - {mode}: " + ", ".join(allowed))
+        lines.append("")
+        lines.append(sandbox(release))
         return "\n".join(lines)
+    if t in ("sandbox", "containment", "free", "safe", "free mode", "safe mode"):
+        return sandbox(release)
     return detail(topic or "", release)
 
 
