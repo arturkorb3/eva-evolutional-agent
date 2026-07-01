@@ -216,12 +216,29 @@ case "$cmd" in
   fix-perms)
     echo "Resetting ./data ownership to the sandbox user (10001) - undoes a prior free-mode run..."
     repair_data_permissions
+    # On Linux the container writes as uid 10001, so the host user can't delete/edit
+    # ./data afterwards. If ACLs are available, also grant the current host user rwx
+    # (default ACL covers files created later) so reseed/edits work without sudo.
+    # Needs sudo: after the chown above the files are owned by 10001, so the host
+    # user can no longer set ACLs on them itself.
+    if command -v setfacl >/dev/null 2>&1; then
+      sudo setfacl -R -m "u:$(id -u):rwx,u:10001:rwx" data || true
+      sudo setfacl -R -d -m "u:$(id -u):rwx,u:10001:rwx" data || true
+    else
+      echo "Tip: for hassle-free host access to ./data, install ACL support: sudo apt install acl"
+    fi
     echo "Done."
     ;;
   reseed)
     # Drop the materialized runtime so the next start re-seeds v001 from seed/
     # (mounted), without an image rebuild. State/workspace are kept.
-    rm -rf data/runtime
+    # Clear it from INSIDE a one-shot container: the runtime is owned by the
+    # sandbox user (uid 10001), so a host-side `rm -rf` fails on Linux with
+    # "Permission denied". Running rm in the container sidesteps that entirely.
+    echo "Clearing runtime from inside the container (avoids host/container permission issues)..."
+    docker compose -f docker-compose.yml -f docker-compose.free.yml run --rm \
+      --entrypoint /bin/sh eva -c 'find /eva/runtime -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
+    repair_data_permissions
     eva status
     ;;
   work)

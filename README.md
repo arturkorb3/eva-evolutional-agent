@@ -215,7 +215,16 @@ as an *image need* and stops instead of thrashing `apt`. Prefer safe unless you 
 
 ## Quickstart
 
-**Prerequisites:** Docker Desktop (Linux engine).
+**Prerequisites:** Docker (Engine + Compose v2) with the daemon running. On Windows/macOS
+that means Docker Desktop (Linux engine) started; on Linux install `docker` and the
+`docker compose` plugin and ensure the Docker service is active (`sudo systemctl start docker`).
+Verify with `docker compose version` before you begin.
+
+> **Linux note.** The sandbox writes to `./data` as an unprivileged sandbox user (uid
+> `10001`), so those files may not be directly deletable by your host user. Run
+> `./run.sh fix-perms` once — it repairs ownership and, if `setfacl` is available
+> (`sudo apt install acl`), also grants your host user access so `reseed` and manual
+> edits work without `sudo`.
 
 ```powershell
 .\run.ps1 build                  # build the hardened sandbox image
