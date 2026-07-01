@@ -19,7 +19,8 @@ single **seed** release; from there EVA can rewrite, test, and promote new versi
 *itself* inside a hardened Docker sandbox — every self-change a **gated, reversible**
 step, never live surgery on a running system.
 
-![EVA start screen](docs/eva-start.png)
+| ![EVA start screen](docs/Eva-start-1.png) | ![EVA introducing itself](docs/Eva-start-2.png) |
+|:---:|:---:|
 
 ## What EVA is — and isn't
 
