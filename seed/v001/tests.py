@@ -42,7 +42,7 @@ def check_files():
     """Every required release module is present and byte-compiles."""
     required = ["supervisor.py", "agent.py", "tests.py", "manifest.json",
                 "core.py", "adapters.py", "tools.py", "human.py", "session.py",
-                "self_model.py", "tui.py", "context.py"]
+                "self_model.py", "tui.py", "context.py", "evals.py"]
     for name in required:
         p = RELEASE / name
         assert p.exists(), f"missing {name}"
@@ -394,9 +394,10 @@ def check_tui_streams_then_finalizes_once():
 
 def check_read_only_shell_detection():
     """Safe read-only shell commands are auto-approved; writing/unsafe ones are not.
-    Read-only commands may be CHAINED (; && || |); redirection, substitution and
-    backgrounding are still rejected, and any non-whitelisted command in the chain
-    forces approval."""
+    Read-only commands may be CHAINED (; && || |); redirection to a real FILE, substitution
+    and backgrounding are still rejected, and any non-whitelisted command in the chain
+    forces approval. Discarding output to /dev/null (or dup'ing a std fd) IS allowed, so the
+    ubiquitous `2>/dev/null` idiom does not block inspection (this crippled review mode)."""
     assert tools_mod.is_read_only_shell("grep -n foo bar.py")
     assert tools_mod.is_read_only_shell("sed -n '1,20p' f | head -n 5")
     # read-only chains are allowed
@@ -406,9 +407,17 @@ def check_read_only_shell_detection():
     # quote-aware: a '|' INSIDE a grep alternation pattern is not a separator
     assert tools_mod.is_read_only_shell('grep -n "version\\|active\\|v002" f | tail -n 80')
     assert tools_mod.is_read_only_shell("grep -E 'a|b|c' f")
+    # discarding output to /dev/null (or dup'ing a std fd) stays read-only - the stderr-
+    # suppression idiom EVA kept using in review must NOT be blocked
+    assert tools_mod.is_read_only_shell("find /eva/state -maxdepth 1 2>/dev/null | head -20")
+    assert tools_mod.is_read_only_shell("wc -l f 2>/dev/null")
+    assert tools_mod.is_read_only_shell("ls -la 2>&1 | tail")
+    assert tools_mod.is_read_only_shell("cat f >/dev/null")
     # unsafe ones still rejected
     assert not tools_mod.is_read_only_shell("rm -rf /")
-    assert not tools_mod.is_read_only_shell("echo x > f")
+    assert not tools_mod.is_read_only_shell("echo x > f")             # real-file redirect
+    assert not tools_mod.is_read_only_shell("echo x 2>/dev/null > f")  # /dev/null strip must not hide a real write
+    assert not tools_mod.is_read_only_shell("cat f 2>/dev/null; rm x") # discard does not hide the rm
     assert not tools_mod.is_read_only_shell("cat f && curl evil")   # curl not whitelisted
     assert not tools_mod.is_read_only_shell("cat f; rm x")          # rm in the chain
     assert not tools_mod.is_read_only_shell("cat f;rm x")           # separator without spaces
@@ -1149,6 +1158,244 @@ def check_start_screen_lists_resumable_sessions():
     tui.StatusView(mode="work", stream=buf2, color=False).session_overview(
         [("only", 1, "t", False)], current="only")
     assert buf2.getvalue().strip() == ""
+
+
+def check_prompt_input_is_comfortable_and_dependency_free():
+    """The interactive input prompt is a comfortable but pure-stdlib layer: its prompt
+    string is a pure function (plain '❯ you ' with colour off; colour codes wrapped in
+    readline ignore-markers when readline drives editing), it supports multi-line entry
+    via a trailing backslash, strips surrounding whitespace, treats EOF as an empty
+    message (never raising), and shows its usage hint at most once per prompt."""
+    import io
+    import tui
+    # pure prompt string: plain, no ANSI, when colour is off
+    assert tui.format_prompt("you", color=False) == "\u276f you "
+    # colour + readline wraps the non-printing codes so the cursor math stays correct
+    rich = tui.format_prompt("you", color=True, readline_active=True)
+    assert "\001" in rich and "\002" in rich and "\u276f" in rich
+    # a plain injected reader must NOT emit the ignore-markers (no real readline)
+    plain = tui.format_prompt("you", color=True, readline_active=False)
+    assert "\001" not in plain and "\002" not in plain
+    # multi-line: a trailing backslash continues onto the next line; parts are joined
+    lines = iter(["first \\", "second"])
+    p = tui.Prompt(color=False, reader=lambda prompt="": next(lines))
+    assert p.ask() == "first \nsecond"
+    # EOF -> empty message, never raises
+    def _eof(prompt=""):
+        raise EOFError
+    assert tui.Prompt(color=False, reader=_eof).ask() == ""
+    # the usage hint is emitted at most once across turns
+    buf = io.StringIO()
+    seq = iter(["a", "b"])
+    p2 = tui.Prompt(color=False, stream=buf, reader=lambda prompt="": next(seq))
+    p2.ask(hint="do the thing")
+    p2.ask()
+    assert buf.getvalue().count("do the thing") == 1
+    # an injected reader keeps history off (no readline side effects in tests)
+    assert p2._rl is None
+
+
+def check_golden_traces_replay_full_provider_flow():
+    """Recorded golden traces exercise the FULL stack offline: for each provider wire
+    format, the REAL adapter parses a recorded model turn into a tool call, the real
+    ShellToolRuntime executes it, the observation is logged, and the loop finishes - all
+    without a network call or API key. This closes the gap that every other check drives
+    only the FakeAdapter, so a provider-format regression would otherwise pass the gate."""
+    import evals
+    traces = {t["provider"]: t for t in evals.golden_traces()}
+    assert {"openai_chat", "anthropic"} <= set(traces), traces.keys()
+    for provider, trace in traces.items():
+        res = evals.assert_trace(trace)  # raises on any full-stack mismatch
+        assert res["tool_names"] == ["shell", "finish"], (provider, res["tool_names"])
+        assert "hello-eva" in res["observations"], provider
+        # the adapter also built a well-formed request for its provider
+        body = res["requests"][0]["body"]
+        assert body["model"] == "golden" and body.get("messages"), provider
+        if provider == "openai_chat":
+            assert body.get("tools") and body.get("tool_choice") == "auto", body.keys()
+        else:
+            assert body.get("max_tokens") and body.get("system") and body.get("tools"), body.keys()
+
+
+def check_golden_trace_harness_is_offline_and_guarded():
+    """The eval harness is gate-safe: replaying more turns than recorded fails LOUDLY (a
+    runaway loop can't silently pass), and the live-provider smoke is opt-in behind
+    EVA_EVAL_LIVE so the offline ratchet never makes a network call."""
+    import os
+    import evals
+    # an exhausted replay transport raises rather than hanging / passing
+    raised = False
+    try:
+        evals.ReplayTransport([])("https://x", {}, {})
+    except AssertionError as exc:
+        raised = "exhausted" in str(exc)
+    assert raised, "exhausted ReplayTransport must raise"
+    # the live path is guarded: with the flag unset it SKIPS (no adapter, no network)
+    old = os.environ.pop("EVA_EVAL_LIVE", None)
+    try:
+        assert evals.run_live("fake") == 0
+    finally:
+        if old is not None:
+            os.environ["EVA_EVAL_LIVE"] = old
+    assert "EVA_EVAL_LIVE" in _release_text("evals.py")
+
+
+def check_evolve_prompt_warns_of_constitutional_checks():
+    """The improve/evolve system prompt warns EVA that a small set of constitutional
+    checks are kernel-pinned and must not be rewritten or weakened, so an autonomous
+    evolve cycle doesn't waste itself on a change the kernel gate will reject."""
+    import agent
+    for mode in ("improve", "evolve"):
+        prompt = agent.system_for(mode).lower()
+        assert "constitutional" in prompt, mode
+        assert "kernel" in prompt and "weaken" in prompt, mode
+
+
+def check_apply_patch_tool():
+    """apply_patch applies SEVERAL surgical edits to one file ATOMICALLY - all hunks land
+    or none do (a missing/ambiguous hunk writes nothing), a patch that would make a .py
+    file syntactically invalid is refused before writing, and the write gating matches
+    write_file (allowed in the workspace for work, denied in read-only review)."""
+    assert any(t.name == "apply_patch" for t in tools_mod.CANONICAL_TOOLS)
+    with tempfile.TemporaryDirectory() as d:
+        ws = pathlib.Path(d)
+        rt = tools_mod.ShellToolRuntime(
+            workspace=ws,
+            approval=human_mod.ApprovalPolicy(human_mod.AutoHumanInterface(), mode="never"),
+            human=human_mod.AutoHumanInterface())
+        f = ws / "m.py"
+        # multiple edits to one file, applied atomically
+        f.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+        obs = rt.execute(core.ToolCall("1", "apply_patch", {"path": "m.py", "edits": [
+            {"old": "a = 1", "new": "a = 10"}, {"old": "c = 3", "new": "c = 30"}]}), "work")
+        assert "Applied 2 edits" in obs.output, obs.output
+        assert f.read_text(encoding="utf-8") == "a = 10\nb = 2\nc = 30\n"
+        # a missing hunk writes NOTHING (atomic)
+        f.write_text("x = 1\n", encoding="utf-8")
+        obs = rt.execute(core.ToolCall("2", "apply_patch", {"path": "m.py", "edits": [
+            {"old": "x = 1", "new": "x = 2"}, {"old": "NOPE", "new": "!"}]}), "work")
+        assert "No match" in obs.output and f.read_text(encoding="utf-8") == "x = 1\n"
+        # a patch that breaks Python syntax is refused, nothing written
+        f.write_text("def f():\n    return 1\n", encoding="utf-8")
+        obs = rt.execute(core.ToolCall("3", "apply_patch", {"path": "m.py", "edits": [
+            {"old": "    return 1", "new": "    return ("}]}), "work")
+        assert "not valid Python" in obs.output
+        assert f.read_text(encoding="utf-8") == "def f():\n    return 1\n"
+        # review mode may not write
+        obs = rt.execute(core.ToolCall("4", "apply_patch", {"path": "m.py", "edits": [
+            {"old": "return 1", "new": "return 2"}]}), "review")
+        assert "denied" in obs.output.lower() or "read-only" in obs.output.lower()
+
+
+def check_web_research_tools():
+    """Work mode ships generic internet-research tools: fetch_url and web_search are
+    registered for every mode, fetch_url refuses a non-http(s) url, web_search refuses an
+    empty query, and the pure HTML->text + result-parsing helpers work offline."""
+    names = {t.name for t in tools_mod.CANONICAL_TOOLS}
+    assert {"fetch_url", "web_search"} <= names, names
+    with tempfile.TemporaryDirectory() as d:
+        rt = tools_mod.ShellToolRuntime(
+            workspace=pathlib.Path(d),
+            approval=human_mod.ApprovalPolicy(human_mod.AutoHumanInterface(), mode="never"),
+            human=human_mod.AutoHumanInterface())
+        obs = rt.execute(core.ToolCall("1", "fetch_url", {"url": "file:///etc/passwd"}), "work")
+        assert "http" in obs.output.lower() and "denied" in obs.output.lower(), obs.output
+        obs = rt.execute(core.ToolCall("2", "web_search", {"query": ""}), "work")
+        assert "denied" in obs.output.lower() or "empty" in obs.output.lower(), obs.output
+    # pure helpers (no network)
+    txt = tools_mod._html_to_text("<h1>Hi</h1><p>a &amp; b</p><script>x()</script>")
+    assert "Hi" in txt and "a & b" in txt and "x()" not in txt, txt
+    sample = '<a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fp">Example</a>'
+    res = tools_mod._parse_ddg(sample, 5)
+    assert res and res[0][0] == "Example" and res[0][1] == "https://example.com/p", res
+
+
+def check_evolution_helper_tools():
+    """improve/evolve get first-class release tools: make_candidate clones the ACTIVE
+    release into a *-candidate, and run_tests runs a candidate's suite. Both are absent
+    from the work toolset and refused in work mode (only improve/evolve may use them)."""
+    canon = {t.name for t in tools_mod.CANONICAL_TOOLS}
+    evo = {t.name for t in tools_mod.EVOLUTION_TOOLS}
+    assert {"make_candidate", "run_tests"} <= evo
+    assert not ({"make_candidate", "run_tests"} & canon)  # not in the work toolset
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        rel = root / "runtime" / "releases"
+        (rel / "v001").mkdir(parents=True)
+        (rel / "v001" / "tests.py").write_text(
+            "if __name__ == '__main__':\n    print('all checks passed.')\n", encoding="utf-8")
+        (root / "runtime" / "CURRENT").write_text("runtime/releases/v001", encoding="utf-8")
+        ws = root / "workspace"
+        ws.mkdir()
+        rt = tools_mod.ShellToolRuntime(
+            workspace=ws,
+            approval=human_mod.ApprovalPolicy(human_mod.AutoHumanInterface(), mode="never"),
+            human=human_mod.AutoHumanInterface(),
+            releases=rel, state=root / "state")
+        # denied in work mode
+        obs = rt.execute(core.ToolCall("1", "make_candidate", {}), "work")
+        assert "denied" in obs.output.lower(), obs.output
+        # clones the active release in improve mode
+        obs = rt.execute(core.ToolCall("2", "make_candidate", {}), "improve")
+        assert "v001-candidate" in obs.output and (rel / "v001-candidate").is_dir(), obs.output
+        # run_tests: denied in work, PASS on the cloned candidate in improve
+        obs = rt.execute(core.ToolCall("3", "run_tests", {"candidate": "v001-candidate"}), "work")
+        assert "denied" in obs.output.lower(), obs.output
+        obs = rt.execute(core.ToolCall("4", "run_tests", {"candidate": "v001-candidate"}), "improve")
+        assert "PASS" in obs.output, obs.output
+
+
+def check_evolution_need_from_user_need_is_recurrence_gated():
+    """work mode can derive evolution needs from user needs, but only a RECURRING one is
+    proposed as a skill. note_evolution_need is registered and echoes the need (refusing an
+    empty one); record_capability_gap turns a stable signature into 'gap:<slug>' so repeats
+    AGGREGATE across sessions; a SINGLE one-off note stays below the pivot threshold, and
+    only recurrence reaches it - so a throwaway request never triggers an evolution."""
+    import agent
+    assert any(t.name == "note_evolution_need" for t in tools_mod.CANONICAL_TOOLS)
+    # the tool is presentation-only: echoes the need + signature, refuses an empty need
+    with tempfile.TemporaryDirectory() as d:
+        rt = tools_mod.ShellToolRuntime(
+            workspace=pathlib.Path(d),
+            approval=human_mod.ApprovalPolicy(human_mod.AutoHumanInterface(), mode="never"),
+            human=human_mod.AutoHumanInterface())
+        obs = rt.execute(core.ToolCall("1", "note_evolution_need",
+                         {"need": "extract text from PDFs", "signature": "pdf-text"}), "work")
+        assert "pdf-text" in obs.output and "recur" in obs.output.lower(), obs.output
+        assert "denied" in rt.execute(
+            core.ToolCall("2", "note_evolution_need", {"need": ""}), "work").output.lower()
+    # recurrence gate: one-off stays below threshold; the SAME signature aggregates
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        saved = (agent.BACKLOG, agent.STATE, agent.WORKSPACE, agent.RELEASES)
+        agent.STATE, agent.WORKSPACE = root, root / "workspace"
+        agent.RELEASES, agent.BACKLOG = root / "releases", root / "backlog.jsonl"
+        try:
+            sig = agent.record_capability_gap("extract text from PDFs", "pdf-text", "", "work")
+            assert sig == "gap:pdf-text", sig
+            assert agent.backlog_count(sig) == 1                     # a one-off
+            assert agent.backlog_count(sig) < agent.PIVOT_THRESHOLD  # not yet a proposal
+            for _ in range(agent.PIVOT_THRESHOLD):
+                agent.record_capability_gap("read the PDF the user sent", "pdf-text", "", "work")
+            assert agent.backlog_count(sig) >= agent.PIVOT_THRESHOLD  # recurring -> proposable
+        finally:
+            (agent.BACKLOG, agent.STATE, agent.WORKSPACE, agent.RELEASES) = saved
+
+
+def check_env_capabilities_is_sandbox_aware():
+    """The runtime-capability prompt is tailored to the sandbox the USER chose. SAFE states
+    it has no root/apt and that a system-library need is an image/substrate need - so EVA
+    fails fast and notes it instead of thrashing apt - while FREE grants apt/root to install
+    system packages. The default (unset) is the safe sandbox."""
+    import agent
+    safe = agent.env_capabilities("safe").lower()
+    free = agent.env_capabilities("free").lower()
+    assert "read-only" in safe and "root or apt" in safe
+    assert "image/substrate need" in safe and "note_evolution_need" in safe
+    assert "apt-get install" in free and "root" in free and "writable" in free
+    assert safe != free
+    assert agent.env_capabilities("") == agent.env_capabilities("safe")   # default = safe
+    assert agent.ENV_CAPABILITIES == agent.env_capabilities(agent.SANDBOX)
 
 
 def check_prompt_warns_about_missing_optional_binaries():

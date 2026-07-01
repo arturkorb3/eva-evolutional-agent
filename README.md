@@ -10,13 +10,33 @@
 > rewrites its own source code. **Only ever run it inside the provided Docker
 > sandbox** — never directly on a host or against data you care about.
 
-EVA is a small, self-evolving LLM driven agent. A tiny **immutable kernel** boots a single **seed** release; from there EVA can rewrite, test, and promote new
-versions of *itself* inside a hardened Docker sandbox. The bet is the design:
-keep the core minimal, let capabilities grow only when real use demands them, and
-make every self-change a **gated, reversible** step — never live surgery on a
-running system.
+EVA is a small, self-evolving LLM-driven agent. A tiny **immutable kernel** boots a
+single **seed** release; from there EVA can rewrite, test, and promote new versions of
+*itself* inside a hardened Docker sandbox — every self-change a **gated, reversible**
+step, never live surgery on a running system.
 
 ![EVA start screen](docs/eva-start.png)
+
+## What EVA is — and isn't
+
+EVA is not a finished agent architecture. It is a **safe architecture for evolving one.**
+
+- **Fixed meta-architecture** (the kernel): seed → candidate → gate → promote →
+  ledger → rollback. The agent can never touch it.
+- **Evolvable agent-architecture** (the release): the loop, tools, adapters,
+  memory, self-model, TUI — all of `seed/v001` is only *generation 0*. EVA
+  rewrites copies of it under the gates.
+
+That makes EVA **bounded architecture-agnostic**: not "no architecture", but
+"architecture as a gated, reversible, evolvable state." Platform agents ship the
+structure — gateway, skill registry, channels, scheduler. EVA ships the
+**mechanism to grow one under control**, so two different uses can, over many
+generations, grow two different EVAs — without ever weakening the kernel, gates,
+or policies.
+
+The seed is deliberately the **smallest viable organism plus an immune system**
+(gates, ratchet, policies, manifest hashes), not a product. New organs are
+*earned* through use, then optionally folded back into a later seed.
 
 ## The idea in one picture
 
@@ -32,7 +52,7 @@ evolution loop
                         (every promotion recorded in the ledger)
 ```
 
-- **`organism.py`** is the kernel: ~300 lines, baked into the image, **not**
+- **`organism.py`** is the kernel: ~600 lines, baked into the image, **not**
   editable by the agent. It seeds `v001`, runs the final promotion gate, records a
   release **ledger**, and can **roll back** through it.
 - **`seed/v001/`** is the genome — real, reviewable, hash-pinned files. The kernel
@@ -59,6 +79,7 @@ layer without re-inventing the loop.
 | `agent.py` | Wiring + the CLI/chat loop; the four modes; the friction backlog and improve-pivot. |
 | `supervisor.py` | Release gates: required files, the **ratchet**, smoke, dry-runs, qualification rounds. |
 | `tests.py` | LLM-free checks — the ratchet itself (every promotion runs them). |
+| `evals.py` | **Golden traces**: recorded provider responses replayed through the *real* adapters + loop + runtime (offline, in the gate) — plus an opt-in live smoke. |
 
 Because the self-model is *generated from the live code*, EVA always knows the
 release it is actually running and its current toolset — call `inspect_self`
@@ -88,7 +109,9 @@ Usefulness is *grown from real failures*, not designed up front. When the same
 friction recurs (default 3×), EVA offers to **pivot** to an `improve` cycle aimed
 at the root cause — a clean phase change, never live mutation.
 
-A self-change only goes live after it clears three guarantees:
+A self-change only goes live after it clears the gates — the LLM-free checks
+(including **golden traces** that drive the real provider adapters over recorded
+responses) and three standing guarantees:
 
 1. **The ratchet** — a fix must add/strengthen a test; a candidate may never run
    *fewer* checks than the current release (counted by what actually executes,
@@ -115,6 +138,15 @@ Within that box EVA can extend its **own** runtime tooling without an image chan
 a persistent writable HOME (`/eva/.local`) for `pip install --user`, static
 binaries on `PATH`, and HTTP via Python `urllib` or `node` `fetch` (there is no
 `curl`/`wget`). It **cannot** change the image or `organism.py`.
+
+**Safe vs free sandbox — you choose.** By default EVA runs in the **safe** sandbox above.
+For tasks that need system packages (a browser engine's libraries, `apt`), run the **free**
+sandbox — `.\run.ps1 -Free <cmd>` / `./run.sh --free <cmd>` — which layers
+[`docker-compose.free.yml`](docker-compose.free.yml): a **writable root filesystem, root and
+`apt`**. That is a bigger blast radius (root *inside* the container), still contained to the
+container and `./data`, and ephemeral (system installs last only for the session). EVA is
+told which mode it is in (`EVA_SANDBOX`), so in safe mode it recognises a system-library need
+as an *image need* and stops instead of thrashing `apt`. Prefer safe unless you need it.
 
 > **Residual risk:** the container has outbound network access (for the LLM API).
 > For maximum isolation, point EVA at a local model and restrict egress.
@@ -183,7 +215,7 @@ ledgers). Delete `data/` or run `reseed` to start fresh — the kernel re-seeds
 organism.py          immutable kernel (seed · gates · promote · ledger · rollback)
 seed/v001/           the genome (layered, hash-pinned), baked into the image
   core.py adapters.py tools.py human.py session.py context.py
-  self_model.py tui.py agent.py supervisor.py tests.py manifest.json
+  self_model.py tui.py agent.py supervisor.py tests.py evals.py manifest.json
 Dockerfile           hardened, non-root image (kernel + seed + Node.js)
 docker-compose.yml   the sandbox (read-only fs, caps dropped, resource limits)
 run.ps1 / run.sh     wrappers (build/work/improve/review/evolve/paste/reseed/rollback/status)
@@ -194,11 +226,12 @@ data/                created at runtime; all evolution lives here (git-ignored)
 
 A research experiment, not production software.
 
-- Qualification gates check structure/behavior; they don't yet exercise full live
-  LLM/tool flows.
+- The standing gate runs offline: golden traces replay *recorded* provider
+  responses, and a live check exists but is opt-in — so a provider silently
+  changing its wire format won't fail the gate until you run it.
 - The ratchet counts *executed* checks, but still can't prove a test body wasn't
   weakened in other ways.
-- Context compaction is deterministic and rudimentary; one session per mode.
+- Context compaction is deterministic and rudimentary.
 - Network egress is open by default (see residual risk above).
 
 ## License

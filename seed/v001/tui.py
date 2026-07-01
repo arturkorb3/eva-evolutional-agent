@@ -18,6 +18,16 @@ import json
 import os
 import sys
 
+try:  # comfort only: stdlib on Linux/macOS (present in the slim Docker image),
+    import readline as _readline  # absent on bare Windows. NEVER a hard dependency.
+except Exception:  # pragma: no cover - platform dependent
+    _readline = None
+
+# readline computes the visible prompt width to drive line-editing/wrapping; any
+# non-printing (colour) sequence in the prompt must be wrapped in \001..\002 so it is
+# excluded from that width, otherwise the cursor drifts on long / recalled lines.
+_RL_IGNORE_START, _RL_IGNORE_END = "\001", "\002"
+
 _CODES = {
     "reset": "\x1b[0m", "dim": "\x1b[2m", "bold": "\x1b[1m",
     "red": "\x1b[31m", "green": "\x1b[32m", "yellow": "\x1b[33m",
@@ -59,6 +69,19 @@ def summarize_args(name: str, args: dict, limit: int = 72) -> str:
         return _clip(args.get("path", "") or "(no path)", limit)
     if name == "inspect_self":
         return "topic=" + _clip(args.get("topic", "") or "overview", limit)
+    if name == "fetch_url":
+        return _clip(args.get("url", ""), limit)
+    if name == "web_search":
+        return _clip(args.get("query", ""), limit)
+    if name == "apply_patch":
+        n = len(args.get("edits") or [])
+        return _clip(args.get("path", "") or "(no path)", limit) + f"  ({n} edits)"
+    if name == "make_candidate":
+        return _clip(args.get("name", "") or "(clone active release)", limit)
+    if name == "run_tests":
+        return _clip(args.get("candidate", ""), limit)
+    if name == "note_evolution_need":
+        return _clip(args.get("need", ""), limit)
     if name == "ask_user":
         return _clip(args.get("question", ""), limit)
     if name == "request_promotion":
@@ -179,6 +202,106 @@ def format_error(stage: str, exc, *, color: bool = True) -> str:
     return _paint(f"✗ {stage} error: ", "bold", "red", color=color) + _clip(str(exc), 160)
 
 
+def format_prompt(label: str = "you", *, color: bool = True,
+                  readline_active: bool = False) -> str:
+    """The input prompt string, e.g. '❯ you '. Colour is optional; when readline is
+    active the colour codes are wrapped in the ignore-markers so the terminal's cursor
+    math stays correct. Pure function (string in -> string out), so it is unit-testable
+    without a terminal."""
+    arrow = "\u276f"  # ❯
+    if not color:
+        return f"{arrow} {label} "
+
+    def mark(code: str) -> str:
+        return (f"{_RL_IGNORE_START}{code}{_RL_IGNORE_END}"
+                if readline_active else code)
+
+    on = "".join(_CODES.get(n, "") for n in ("bold", "cyan"))
+    off = _CODES["reset"]
+    return f"{mark(on)}{arrow} {label}{mark(off)} "
+
+
+class Prompt:
+    """Comfortable, dependency-free line input. When stdlib `readline` is available it
+    adds inline editing (←/→, Ctrl-A/E, Ctrl-U), recall of earlier messages (↑/↓) and a
+    history that persists across sessions. Multi-line entry: end a line with a backslash
+    '\\' to continue on the next line. It degrades gracefully to a plain input() prompt
+    when readline or colour is unavailable, so it stays pure stdlib and works headless.
+
+    Presentation only: it reads a line of text and returns it - no agent logic, no tool
+    calls. A `reader` can be injected (defaulting to builtins.input) so the multi-line
+    and hint behaviour is testable without a real terminal."""
+
+    def __init__(self, *, color: bool = True, stream=None, history_file=None,
+                 reader=None):
+        self.color = color
+        self.stream = stream or sys.stdout
+        self.reader = reader or input
+        # Only drive real readline when using the real input(); an injected reader
+        # (tests) must not touch history files or emit ignore-markers.
+        self._rl = _readline if reader is None else None
+        self._hist_path = str(history_file) if history_file else None
+        self._hinted = False
+        if self._rl and self._hist_path:
+            try:
+                self._rl.read_history_file(self._hist_path)
+            except Exception:
+                pass
+            try:
+                self._rl.set_history_length(1000)
+            except Exception:
+                pass
+
+    def _save_history(self) -> None:
+        if self._rl and self._hist_path:
+            try:
+                self._rl.write_history_file(self._hist_path)
+            except Exception:
+                pass
+
+    def hint(self, text: str) -> None:
+        try:
+            self.stream.write(_paint("  " + text, "gray", color=self.color) + "\n")
+            self.stream.flush()
+        except Exception:
+            pass
+
+    def ask(self, label: str = "you", hint: "str | None" = None) -> str:
+        """Read one (possibly multi-line) message and return it stripped. EOF/Ctrl-D
+        returns '' (never raises). A trailing backslash continues on the next line. The
+        usage hint is shown at most once per Prompt (first call), so later turns stay
+        clean."""
+        try:
+            self.stream.write("\n")  # a little breathing room before each prompt
+            self.stream.flush()
+        except Exception:
+            pass
+        if hint is None and not self._hinted:
+            hint = ("Enter sends · end a line with \\ for a new line · "
+                    "/paste adds your last screenshot · type exit to leave")
+        if hint:
+            self.hint(hint)
+        self._hinted = True
+        first = format_prompt(label, color=self.color,
+                              readline_active=bool(self._rl))
+        cont = format_prompt("\u2026", color=self.color,
+                             readline_active=bool(self._rl))
+        parts, prompt = [], first
+        while True:
+            try:
+                line = self.reader(prompt)
+            except EOFError:
+                break
+            if line.endswith("\\"):
+                parts.append(line[:-1])
+                prompt = cont
+                continue
+            parts.append(line)
+            break
+        self._save_history()
+        return "\n".join(parts).strip()
+
+
 class StatusView:
     """Renders the loop's live events. Construct one per run; pass its methods as the
     on_say / on_tool_call / on_observation / on_error callbacks of run_agent_loop."""
@@ -196,6 +319,8 @@ class StatusView:
         # True while assistant text is being streamed live for the current turn, so
         # say() (the final reconcile) closes the open line instead of reprinting it.
         self._streaming = False
+        # Lazily created comfortable input prompt (readline editing + history).
+        self._prompt = None
 
     def _w(self, line: str) -> None:
         try:
@@ -220,6 +345,18 @@ class StatusView:
         """One-time branded start screen: logo, run identity and a short how-to."""
         self._w(format_welcome(self.mode, self.identity, self.release,
                                color=self.color, usage=usage))
+
+    def ask(self, label: str = "you", hint: "str | None" = None,
+            history_file=None) -> str:
+        """Prompt the human for a line of input using the comfortable, dependency-free
+        Prompt (inline editing + cross-session history via stdlib readline, multi-line
+        via a trailing backslash). Reuses one Prompt per view so history + the
+        shown-once hint persist across turns. Returns the message stripped; '' on EOF or
+        an empty line."""
+        if self._prompt is None:
+            self._prompt = Prompt(color=self.color, stream=self.stream,
+                                  history_file=history_file)
+        return self._prompt.ask(label=label, hint=hint)
 
     def session_overview(self, rows, current=None) -> None:
         """Surface resumable work sessions on the start screen so the user can pick up a

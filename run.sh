@@ -5,13 +5,24 @@ cd "$(dirname "$0")"
 
 mkdir -p data/runtime data/state data/workspace data/local
 
+# Sandbox selection: SAFE (default) or FREE (--free) - the user decides the containment
+# level. FREE layers docker-compose.free.yml (writable rootfs + root + apt) on top.
+COMPOSE_FILES=(-f docker-compose.yml)
+if [[ "${1:-}" == "--free" ]]; then
+  COMPOSE_FILES+=(-f docker-compose.free.yml)
+  shift
+  printf '\n  !! EVA FREE sandbox: writable rootfs + root + apt inside the container.\n' >&2
+  printf '     Bigger blast radius (still contained to the container + ./data; ephemeral).\n' >&2
+  printf '     Omit --free for the default hardened SAFE sandbox.\n\n' >&2
+fi
+
 # Bare `./run.sh` just starts EVA (work is the default mode), matching run.ps1.
 cmd="${1:-work}"
 shift || true
 
 # First-run onboarding (interactive .env setup) runs just before dispatch, below.
 
-eva() { docker compose run --rm eva "$@"; }
+eva() { docker compose "${COMPOSE_FILES[@]}" run --rm eva "$@"; }
 
 # Best-effort clipboard image grab (writes a PNG to $1; returns 0 on success).
 eva_clip_grab() {
@@ -226,7 +237,7 @@ case "$cmd" in
     if [[ "${1:-}" =~ ^[0-9]+$ ]]; then rounds="$1"; shift; fi
     eva evolve --rounds "$rounds" "$@"
     ;;
-  shell)    docker compose run --rm --entrypoint /bin/sh eva ;;
+  shell)    docker compose "${COMPOSE_FILES[@]}" run --rm --entrypoint /bin/sh eva ;;
   *)
     cat <<'EOF'
 EVA - Evolutional Agent (Docker sandbox)
@@ -244,6 +255,12 @@ Usage: ./run.sh <command> [args]
   unlock                Clear a dead evolution lock (single-writer guard)
   reseed                Re-seed v001 from seed/ (after editing the genome; no rebuild)
   shell                 Open a shell inside the container (debug)
+
+Sandbox mode:
+  --free <command>      Run in the FREE sandbox (writable rootfs + root + apt) instead of
+                        the default hardened SAFE sandbox. Lets EVA install system packages
+                        (e.g. browser libs). Bigger blast radius - use only when needed.
+                        e.g.  ./run.sh --free work
 
 Autonomous (no per-step approval; safe because Docker contains it):
   ./run.sh evolve 3 --yes --allow-shell

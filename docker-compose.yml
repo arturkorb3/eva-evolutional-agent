@@ -78,6 +78,10 @@ services:
       EVA_TUI_FULL: "${EVA_TUI_FULL:-}"
       NO_COLOR: "${NO_COLOR:-}"
       EVA_STREAM: "${EVA_STREAM:-}"
+      # Sandbox mode (safe | free). Safe = this hardened container (default). The free
+      # override (docker-compose.free.yml) sets this to "free" and relaxes containment so
+      # EVA may install system packages; EVA reads it to know what it is allowed to do.
+      EVA_SANDBOX: "${EVA_SANDBOX:-safe}"
 
     # Persist + expose everything the organism evolves, on the host.
     # The kernel (organism.py) is intentionally NOT mounted, so the agent

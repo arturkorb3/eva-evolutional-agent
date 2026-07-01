@@ -1,0 +1,32 @@
+# EVA FREE sandbox — a deliberately MORE powerful, LESS contained mode.
+#
+# The USER chooses the mode at launch. SAFE (docker-compose.yml alone) is the default
+# hardened container. FREE layers this override on top:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.free.yml run --rm eva work
+#   or:   .\run.ps1 -Free work        /        ./run.sh --free work
+#
+# What it changes vs safe:
+#   - writable root filesystem (read_only: false) so apt/dpkg can install packages
+#   - runs as root (user 0:0) and restores the caps apt/dpkg need (chown/fowner/...)
+#   - sets EVA_SANDBOX=free so EVA KNOWS it may install system packages/libraries
+#     (e.g. the shared libraries a browser engine needs) instead of failing fast.
+#
+# Trade-off: a bigger blast radius — a misbehaving or self-evolved agent now has root
+# INSIDE the container. It is STILL contained: no host mounts beyond ./data, and the
+# container is ephemeral (--rm), so system installs last only for the session. For a
+# durable capability, prove it here, then bake it into the image (a human change).
+# Use SAFE (the default) unless you specifically need system packages.
+services:
+  eva:
+    read_only: false
+    user: "0:0"
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+      - SETFCAP
+    environment:
+      EVA_SANDBOX: "free"

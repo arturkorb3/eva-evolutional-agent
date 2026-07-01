@@ -43,6 +43,7 @@ SESSIONS = STATE / "sessions"
 
 BACKLOG = STATE / "backlog.jsonl"            # friction memory
 PIVOT_REQUEST = STATE / "pivot_request.json"  # improve/pivot path
+INPUT_HISTORY = STATE / "input_history"       # readline recall of messages across sessions
 
 def _env_int(name, default):
     # Tolerate unset OR empty-string env vars: docker-compose passes "" for unset
@@ -75,7 +76,13 @@ Do useful work for the user inside the workspace.
   of the filesystem is read-only, so never write to absolute paths like /eva/...
 - Prefer cheap read-only commands (grep -n, sed -n, head, tail, diff) over
   reading whole files.
+- For research, use web_search to FIND pages and fetch_url to READ them - don't
+  guess facts or hand-write HTTP code. For multi-part code edits, use apply_patch.
 - Do not touch runtime/, releases or state/.
+- Tell one-off from recurring: if a user need reveals a capability you lack or can only
+  do awkwardly, HANDLE it now - and if it looks DURABLE (likely to recur), also record it
+  with note_evolution_need using a STABLE signature (a slug for the capability class). A
+  one-off is fine to just do; only a need that RECURS is proposed as a real skill to evolve.
 - If you lack information, use ask_user instead of guessing.
 - If the user only asks a question or makes small talk, ANSWER directly in your
   reply and do NOT call any tool. Reserve `finish` for when an actual work TASK is
@@ -86,19 +93,20 @@ IMPROVE_SYSTEM = """You are the evolution agent of EVA, running in DIRECTED mode
 You have ONE concrete TASK; implement EXACTLY that - nothing else.
 - EVA's modes are EXACTLY: work, improve, review, evolve. Never invent others.
 - Your shell runs in the workspace dir. The releases live ONE LEVEL UP at
-  ../runtime/releases/. Create a candidate by copying the active release, e.g.
-  `cp -r ../runtime/releases/<active> ../runtime/releases/<active>-candidate`,
-  then edit files inside that candidate with the editing tools: read_file to SEE
-  current content, replace_in_file for surgical edits (old->new), write_file for
-  whole/new files. NEVER ask the user for file contents - read them yourself.
+  ../runtime/releases/. Create your candidate with the make_candidate tool (it clones
+  the active release), then edit files inside that candidate with the editing tools:
+  read_file to SEE current content, replace_in_file for a single surgical edit (old->new),
+  apply_patch
+  for SEVERAL surgical edits to one file at once (atomic - all land or none), write_file
+  for whole/new files. NEVER ask the user for file contents - read them yourself.
   Do NOT use shell heredocs/sed for code (string-surgery corrupts files).
 - Never modify the active release in place; organism.py (the kernel) is off-limits.
 - When you add a test to tests.py, insert the new check_/test_ function ABOVE the
   `_all_checks` / `if __name__ == "__main__"` block. Functions appended AFTER that
   block are never defined when the tests run, so they silently do NOT execute.
-- Before request_promotion, VERIFY the candidate yourself by running its tests:
-  `python ../runtime/releases/<candidate>/tests.py --self`. Only request promotion
-  if they pass. Never push a candidate you have not actually run.
+- Before request_promotion, VERIFY the candidate with the run_tests tool (it runs the
+  candidate's tests.py --self). Only request promotion if they pass. Never push a
+  candidate you have not actually run.
 - Keep changes small. If you hit unrelated friction, note it and keep going.
 - Finish only after the change is written AND verified."""
 
@@ -110,17 +118,22 @@ stating the single improvement you will make and WHY (one or two sentences) - th
 implement it. EVA's modes are EXACTLY: work, improve, review, evolve. Your shell runs in
 the workspace dir; releases live one level up at ../runtime/releases/. Copy the
 active release to ../runtime/releases/<active>-candidate and edit inside it with
-read_file / replace_in_file / write_file (read files yourself; never ask the user
-for file contents; never use shell heredocs/sed for code).
+read_file / replace_in_file / apply_patch / write_file (read files yourself; never ask
+the user for file contents; never use shell heredocs/sed for code).
 When you add a test, place the new check_/test_ function ABOVE the `_all_checks` /
 `__main__` block (functions defined after it never run). Before request_promotion,
-run the candidate's tests yourself (`python ../runtime/releases/<candidate>/tests.py
---self`) and only promote if they pass. Strengthen tests when you fix a friction
-class. Never weaken gates; organism.py is off-limits."""
+run the candidate's tests with run_tests and only promote if they pass. Strengthen tests
+when you fix a friction class. Never weaken gates; organism.py is off-limits."""
 
 REVIEW_SYSTEM = """You are the review agent of EVA.
 Inspect and explain the workspace / release using read-only shell only. Do not
-change anything. Give clear risk notes and next steps, then finish."""
+change anything. Give clear risk notes and next steps, then finish.
+- Read-only shell may DISCARD output to /dev/null (e.g. `find . 2>/dev/null`) and pipe
+  read-only commands - use ls/find/wc/grep/sed/cat freely to LIST and inspect.
+- Do NOT claim a release diff or changelog you have not actually verified. To report what
+  changed in a release, read the release ledger (../state/release_ledger.jsonl) and the
+  workspace CHANGELOG, and compare files you actually read - never infer "new in vNNN" from
+  the module list, since most modules already exist in the seed."""
 
 # EVA's self-model: the release it evolves IS its own running code. Rather than
 # preloading the whole file->role map here, EVA is told it can pull its current
@@ -143,7 +156,16 @@ change a capability: (a) add or extend a `check_` with a clear one-line docstrin
 (b) if you add a module or change a file's role, update manifest.json `layers` (plus
 `contains`/`hashes`), and (c) give any new tool a clear first-sentence docstring. A
 behaviour with no `check_` is invisible to your future self AND unprotected by the
-ratchet - so always ship a capability together with its check."""
+ratchet - so always ship a capability together with its check.
+
+A few checks are CONSTITUTIONAL: the immutable kernel pins the EXACT body of a small
+set of identity/security/gate-integrity checks (the mode-policy permission matrix, the
+exact mode set, the ratchet's own integrity, and the provider-neutral core seam). You
+may add new checks and strengthen NON-constitutional ones freely, but you must NOT
+rewrite or weaken a constitutional one - the kernel rejects that promotion with
+"constitutional check body changed". Changing a constitutional check needs a deliberate
+human kernel update, not an evolve cycle. If a gate reports that, REVERT the edit and
+leave the check as it was."""
 
 # Anti-stall: some models narrate ("I will now...") without emitting the tool call.
 ACTION_DISCIPLINE = """Act, don't narrate. When a step needs a tool, emit the tool
@@ -288,20 +310,52 @@ def _clean_user_text(content: str) -> str:
 
 # What EVA can actually do inside the sandbox at runtime. The image is read-only
 # and host-controlled, but EVA is NOT limited to "read-only everything": it has
-# writable, partly persistent space and can extend its own tooling.
-ENV_CAPABILITIES = (
-    "Environment: the OS root filesystem is read-only, but you have writable dirs:\n"
+# writable, partly persistent space and can extend its own tooling. The text is
+# tailored to the chosen SANDBOX mode (safe vs free), which the USER picks at launch,
+# so EVA knows whether it may install system packages - and, in safe mode, fails fast
+# on a system-library need instead of thrashing apt/root.
+_ENV_SAFE = (
+    "Environment (SAFE sandbox): the OS root filesystem is read-only and you run as a\n"
+    "NON-root user, but you have writable dirs:\n"
     "  - the workspace (your shell's cwd) for work products,\n"
     "  - /tmp for scratch,\n"
     "  - /eva/.local (your HOME) which PERSISTS across runs.\n"
     "You can extend your OWN tooling at runtime WITHOUT changing the image:\n"
-    "  - HTTP: there is no curl/wget; use Python (urllib.request) or `node` (global fetch).\n"
+    "  - HTTP: there is no curl/wget baked in; use Python (urllib.request) or `node` (global fetch).\n"
     "  - Python libs: `pip install --user <pkg>` installs under ~/.local and is importable.\n"
     "  - Binaries: place a static binary in ~/.local/bin (= $HOME/.local/bin, on PATH) and run it by name.\n"
-    "Not every common Unix utility is installed; before relying on optional binaries,\n"
-    "verify with `command -v <tool>` or prefer Python stdlib/Node equivalents.\n"
+    "You do NOT have root or apt here, so SYSTEM packages/libraries cannot be installed\n"
+    "(e.g. the shared libraries a browser engine needs). If a task needs one, do NOT keep\n"
+    "retrying apt/sudo/root - recognise it as an IMAGE/substrate need: either the user must\n"
+    "run you in the 'free' sandbox, or a human must bake it into the image. Note it (e.g.\n"
+    "note_evolution_need) and fall back to a pure-Python / static-binary / network-service\n"
+    "alternative. Not every common Unix utility is installed; verify optional binaries with\n"
+    "`command -v <tool>` or prefer Python stdlib/Node equivalents.\n"
     "You cannot modify the container image/Dockerfile or organism.py (the kernel)."
 )
+_ENV_FREE = (
+    "Environment (FREE sandbox): you are running in the POWERFUL, less-contained mode the\n"
+    "user chose. The root filesystem is WRITABLE and you have root, so in addition to the\n"
+    "writable workspace, /tmp and /eva/.local (persistent HOME) you MAY:\n"
+    "  - install system packages: `apt-get update && apt-get install -y <pkg>` (you are root),\n"
+    "  - add the system libraries a browser/native tool needs, and run them,\n"
+    "  - `pip install --user <pkg>` and static binaries in ~/.local/bin as usual.\n"
+    "Caveat: this container is EPHEMERAL (started with --rm), so apt-installed system\n"
+    "packages last only for THIS session. For a DURABLE capability, prove it works here,\n"
+    "then propose baking it into the image (a human Dockerfile change). You still cannot\n"
+    "modify organism.py (the kernel)."
+)
+
+
+def env_capabilities(sandbox: str) -> str:
+    """Runtime-capability prompt tailored to the sandbox mode (safe vs free). Pure fn."""
+    return _ENV_FREE if str(sandbox or "").strip().lower() == "free" else _ENV_SAFE
+
+
+# The user selects the sandbox at launch (safe by default); the free override sets
+# EVA_SANDBOX=free. EVA must know which it is in so it behaves correctly.
+SANDBOX = (os.environ.get("EVA_SANDBOX", "safe") or "safe").strip().lower()
+ENV_CAPABILITIES = env_capabilities(SANDBOX)
 
 
 def tools_for(mode: str):
@@ -422,20 +476,43 @@ def record_shell_friction(observation_text: str, mode: str) -> str | None:
     return signature
 
 
-def maybe_pivot(signature: str, mode: str, human) -> bool:
-    """On repeated friction in work mode, ask the human to pivot to an improve
-    cycle. A pivot is a clean phase switch (request + stop), never live mutation."""
+def record_capability_gap(need: str, signature: str, detail: str, mode: str) -> str:
+    """Record a capability the user needed but EVA lacks (or does only awkwardly) as a
+    'gap:<slug>' signature, so repeats of the SAME need aggregate across sessions and only
+    a RECURRING need is proposed as a skill to evolve. A single (one-off) note stays below
+    the pivot threshold. Returns the signature."""
+    raw = (signature or need or "").strip().lower()
+    slug = "-".join("".join(c if c.isalnum() else " " for c in raw).split())[:40] or "unspecified"
+    sig = f"gap:{slug}"
+    backlog_append({"kind": "capability_gap", "mode": mode, "signature": sig,
+                    "need": (need or "")[:300], "detail": (detail or "")[:300]})
+    return sig
+
+
+def maybe_pivot(signature: str, mode: str, human, *, kind: str = "friction") -> bool:
+    """On a repeated signal in work mode, ask the human to pivot to an improve cycle. A
+    pivot is a clean phase switch (request + stop), never live mutation. `kind` shapes the
+    wording only: repeated FRICTION (something failing) vs a recurring capability NEED
+    (worth building as a skill) - BOTH use the same recurrence threshold, so a one-off
+    never fires."""
     if mode != "work" or PIVOT_REQUEST.exists():
         return False
     if backlog_count(signature) < PIVOT_THRESHOLD:
         return False
-    print(f"\nRepeated friction: '{signature}'.")
-    if not human.confirm("Pause work and pivot to an improve cycle to fix this?"):
+    if kind == "capability_gap":
+        print(f"\nRecurring need: '{signature}'.")
+        ask = "Pause work and pivot to an improve cycle to build this as a skill?"
+        reason = f"Recurring capability need '{signature}' during work."
+    else:
+        print(f"\nRepeated friction: '{signature}'.")
+        ask = "Pause work and pivot to an improve cycle to fix this?"
+        reason = f"Repeated friction '{signature}' during work."
+    if not human.confirm(ask):
         backlog_append({"kind": "pivot_declined", "mode": mode, "signature": signature})
         return False
     PIVOT_REQUEST.write_text(json.dumps({
         "signature": signature, "from_release": str(RELEASE), "time": time.time(),
-        "reason": f"Repeated friction '{signature}' during work.",
+        "reason": reason,
     }, indent=2), encoding="utf-8")
     backlog_append({"kind": "pivot_requested", "mode": mode, "signature": signature})
     print("Pivot requested. Finishing this work session so an improve cycle can run.")
@@ -520,10 +597,7 @@ def run_mode(mode: str, task: str):
     if not resumed:
         if not (task or "").strip():
             if interactive:
-                try:
-                    task = input("You: ").strip()
-                except EOFError:
-                    task = ""
+                task = view.ask(history_file=INPUT_HISTORY)
                 if not task or task.lower() in {"exit", "quit", "q", "bye"}:
                     print("Nothing to do — bye.")
                     return
@@ -556,6 +630,12 @@ def run_mode(mode: str, task: str):
 
     def on_tool_call(call):
         view.tool_call(call)
+        if call.name == "note_evolution_need":
+            a = call.arguments or {}
+            sig = record_capability_gap(a.get("need", ""), a.get("signature", ""),
+                                        a.get("detail", ""), mode)
+            if maybe_pivot(sig, mode, human, kind="capability_gap"):
+                pivoted["flag"] = True
 
     def on_observation(obs):
         view.observation(obs)
@@ -579,10 +659,7 @@ def run_mode(mode: str, task: str):
         # replay and type the next message BEFORE EVA runs, instead of auto-replying.
         if needs_user_input_first:
             needs_user_input_first = False
-            try:
-                reply = input("\nYou (Enter or 'exit' to end): ").strip()
-            except EOFError:
-                reply = ""
+            reply = view.ask(history_file=INPUT_HISTORY)
             if not reply or reply.lower() in {"exit", "quit", "q", "bye"}:
                 break
             reply_text, reply_images = extract_image_attachments(reply, WORKSPACE)
@@ -609,10 +686,7 @@ def run_mode(mode: str, task: str):
         if not interactive or outcome == "finish":
             if not interactive:
                 break
-        try:
-            reply = input("\nYou (Enter or 'exit' to end): ").strip()
-        except EOFError:
-            reply = ""
+        reply = view.ask(history_file=INPUT_HISTORY)
         if not reply or reply.lower() in {"exit", "quit", "q", "bye"}:
             break
         reply_text, reply_images = extract_image_attachments(reply, WORKSPACE)

@@ -6,7 +6,11 @@ param(
     [string]$Command = "work",
 
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
-    [string[]]$Rest
+    [string[]]$Rest,
+
+    # Run EVA in the FREE sandbox (writable rootfs + root + apt) instead of the default
+    # hardened SAFE sandbox. The user decides the containment level.
+    [switch]$Free
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,11 +22,24 @@ foreach ($d in "data/runtime", "data/state", "data/workspace", "data/local") {
     }
 }
 
+# Sandbox selection: SAFE (default) or FREE (-Free) - the user decides the containment
+# level. FREE layers docker-compose.free.yml (writable rootfs + root + apt) on top.
+$script:ComposeFiles = @("-f", "docker-compose.yml")
+if ($Free) {
+    $script:ComposeFiles += @("-f", "docker-compose.free.yml")
+    Write-Host ""
+    Write-Host "  !! EVA FREE sandbox: writable rootfs + root + apt inside the container." -ForegroundColor Yellow
+    Write-Host "     Bigger blast radius (still contained to the container + ./data; ephemeral)." -ForegroundColor Yellow
+    Write-Host "     Omit -Free for the default hardened SAFE sandbox." -ForegroundColor Yellow
+    Write-Host ""
+}
+
 # First-run onboarding (interactive .env setup) runs just before dispatch, below.
 
 function Invoke-Eva {
     param([string[]]$EvaArgs)
-    docker compose run --rm eva @EvaArgs
+    $files = $script:ComposeFiles
+    docker compose @files run --rm eva @EvaArgs
 }
 
 function Start-ClipboardWatcher {
@@ -292,7 +309,7 @@ Write-Output 'OK'
         }
         Invoke-Eva (@("evolve", "--rounds", $rounds) + $extra)
     }
-    "shell" { docker compose run --rm --entrypoint /bin/sh eva }
+    "shell" { $files = $script:ComposeFiles; docker compose @files run --rm --entrypoint /bin/sh eva }
     default {
         @"
 EVA - Evolutional Agent (Docker sandbox)
@@ -310,6 +327,12 @@ Usage: .\run.ps1 <command> [args]
   unlock                Clear a dead evolution lock (single-writer guard)
   reseed                Re-seed v001 from seed/ (after editing the genome; no rebuild)
   shell                 Open a shell inside the container (debug)
+
+Sandbox mode:
+  -Free <command>       Run in the FREE sandbox (writable rootfs + root + apt) instead of
+                        the default hardened SAFE sandbox. Lets EVA install system packages
+                        (e.g. browser libs). Bigger blast radius - use only when needed.
+                        e.g.  .\run.ps1 -Free work
 
 Autonomous (no per-step approval; safe because Docker contains it):
   .\run.ps1 evolve 3 --yes --allow-shell

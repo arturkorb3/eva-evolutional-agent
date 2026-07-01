@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ast
 import hashlib
 import json
 import os
@@ -316,6 +317,82 @@ def kernel_capability_floor(path):
     return True
 
 
+# Constitutional test bodies: a SMALL set of checks whose LOGIC must never be
+# silently weakened. The count-ratchet proves a candidate runs no FEWER checks; it
+# cannot prove a specific check's body wasn't gutted (e.g. rewritten to `assert
+# True` while the count stays the same). The kernel therefore pins a normalized hash
+# of each constitutional check's body. Changing one of these checks is legitimate
+# ONLY as a deliberate, visible act: edit the check AND update the hash here - which
+# means editing the immutable kernel and rebuilding the image, never something an
+# autonomous evolution can do on its own. Keep this set small and focused on
+# identity / security / gate-integrity invariants.
+CONSTITUTIONAL_TEST_BODIES = {
+    # the per-mode permission matrix (who may write / shell / promote)
+    "check_mode_policy_table":
+        "26e4ff2934d2e8d3908050f87260f17540e59629415a0c42e39e70dae6721e12",
+    # the exact mode set, pinned across every layer that carries modes
+    "check_exact_mode_set_is_single_source_consistent":
+        "a69c8efbfa3a9a9aa48f6c169a5790ffa474323cd3f3a2be3b7747dbf66d8bf5",
+    # the ratchet counts EXECUTED checks (can't be inflated by dead test code)
+    "check_ratchet_count_is_executed_not_static":
+        "789340d85d11bfd44fa66a8ce312a318664f804989922685e42d2865a3d0a553",
+    # the provider-neutral seam: core.py imports no provider/transport
+    "check_core_is_provider_neutral":
+        "40b7f921571964ff92df649f65f27e0cf5d573f80893705c56376fac2272ce86",
+}
+
+
+def _check_body_hash(text, name):
+    # Normalized hash of a check's LOGIC: find the FunctionDef, drop a leading
+    # docstring (wording may legitimately change), and hash ast.unparse of the
+    # remaining body statements. This is stable across reformatting, comments and
+    # docstring edits - and across CPython versions (verified 3.12 == 3.13) - while
+    # staying sensitive to real logic changes (asserts, calls, comparisons).
+    try:
+        tree = ast.parse(text)
+    except Exception:
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            body = list(node.body)
+            if body and isinstance(body[0], ast.Expr) and \
+                    isinstance(getattr(body[0], "value", None), ast.Constant) and \
+                    isinstance(body[0].value.value, str):
+                body = body[1:]
+            if not body:
+                return None
+            try:
+                canon = "\n".join(ast.unparse(stmt) for stmt in body)
+            except Exception:
+                return None
+            return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+    return None
+
+
+def constitutional_test_floor(path):
+    # Verify the candidate's constitutional check bodies match the kernel-pinned
+    # hashes, so a security / identity / gate-integrity check cannot be silently
+    # weakened while keeping the ratchet count. A missing check or a changed body
+    # fails the gate.
+    try:
+        text = (path / "tests.py").read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        print("Kernel floor: cannot read candidate tests.py")
+        return False
+    for name, expected in CONSTITUTIONAL_TEST_BODIES.items():
+        got = _check_body_hash(text, name)
+        if got is None:
+            print("Kernel floor: constitutional check missing or unparsable:", name)
+            return False
+        if got != expected:
+            print("Kernel floor: constitutional check body changed:", name)
+            print("  expected", expected)
+            print("  got     ", got)
+            print("  (weakening a constitutional check requires updating the kernel + rebuild)")
+            return False
+    return True
+
+
 def kernel_gate(candidate_rel):
     rel, path = safe_release_rel(candidate_rel)
 
@@ -328,6 +405,9 @@ def kernel_gate(candidate_rel):
             return False
 
     if not kernel_capability_floor(path):
+        return False
+
+    if not constitutional_test_floor(path):
         return False
 
     # Kernel-level floor. The active/evolved supervisor may have stronger gates,
