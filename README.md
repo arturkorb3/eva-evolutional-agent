@@ -126,6 +126,19 @@ live. A real self-change, end to end, under the guardrails.
 
 ![EVA improving itself — inspect → candidate → write + test → gated promotion](docs/Eva-improve.gif)
 
+EVA self-changes in **two modes**, and both land the same way — a
+**candidate → tests → gated promotion**. They differ only in *who picks the change*:
+
+- **`improve` — directed.** You hand EVA one concrete task (the run above:
+  *"design and implement a skill registry"*). It implements exactly that as a
+  candidate — nothing else — verifies it, and requests promotion.
+- **`evolve` — autonomous.** No task is given. EVA picks *one* small, high-value
+  improvement to its own release, announces what it will change and why in a
+  sentence, then builds it as a candidate the same way.
+
+You steer `improve`; EVA steers `evolve` — but neither ever mutates the running
+code. Every self-change is a gated, reversible candidate.
+
 Every session feeds a persistent **friction backlog** (`data/state/backlog.jsonl`):
 real shell/model failures are recorded with an error-specific signature.
 Usefulness is *grown from real failures*, not designed up front. When the same
