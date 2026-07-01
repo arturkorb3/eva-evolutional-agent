@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import textwrap
@@ -129,19 +130,56 @@ _USAGE_TIPS = (
 )
 
 
-def format_brand(*, color: bool = True) -> str:
+_LOGO_DIR = os.path.dirname(os.path.abspath(__file__))
+_LOGO_SIZES = (160, 120, 84)   # finest first; a matching eva_logo_<W>.ans may ship
+_LOGO_CACHE: "dict[int, str | None]" = {}
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _read_logo(width: int) -> "str | None":
+    if width not in _LOGO_CACHE:
+        try:
+            data = open(os.path.join(_LOGO_DIR, f"eva_logo_{width}.ans"),
+                        "r", encoding="utf-8").read()
+        except Exception:
+            data = ""
+        _LOGO_CACHE[width] = data if data.strip() else None
+    return _LOGO_CACHE[width]
+
+
+def _logo_display_width(text: str) -> int:
+    return max((len(_ANSI_RE.sub("", ln)) for ln in text.splitlines()), default=0)
+
+
+def _load_logo(max_cols: int) -> "str | None":
+    """Pick the FINEST pre-rendered contour logo that fits within max_cols columns (an
+    unlisted genome asset shipped next to this module). Returns None if even the
+    smallest is too wide, so the caller falls back to the block-letter wordmark. Never
+    raises."""
+    for width in _LOGO_SIZES:
+        text = _read_logo(width)
+        if text and _logo_display_width(text) <= max_cols:
+            return text
+    return None
+
+
+def format_brand(*, color: bool = True, logo: "str | None" = None) -> str:
+    if logo:
+        return logo.rstrip("\n") + "\n" + _paint(
+            "  EVA · Evolutional Agent — self-improving · sandboxed", "gray", color=color)
     lines = [_paint(l, "bold", "cyan", color=color) for l in _BRAND_ART]
     lines.append(_paint("  Evolutional Agent · self-improving · sandboxed", "gray", color=color))
     return "\n".join(lines)
 
 
 def format_welcome(mode: str, identity: dict, release: str, *,
-                   color: bool = True, usage: bool = True) -> str:
+                   color: bool = True, usage: bool = True,
+                   logo: "str | None" = None) -> str:
     ident = identity or {}
     meta = f"mode={mode}  model={ident.get('model', '?')}"
     if release:
         meta += f"  release={release}"
-    parts = ["", format_brand(color=color), "", _paint("  " + meta, "bold", color=color)]
+    parts = ["", format_brand(color=color, logo=logo), "", _paint("  " + meta, "bold", color=color)]
     if usage:
         parts.append("")
         for tip in _USAGE_TIPS:
@@ -510,8 +548,13 @@ class StatusView:
 
     def welcome(self, usage: bool = True) -> None:
         """One-time branded start screen: logo, run identity and a short how-to."""
+        logo = None
+        pref = os.environ.get("EVA_TUI_LOGO", "")
+        if pref != "0" and (pref == "1" or (self.color and self._tty())):
+            cols = shutil.get_terminal_size((80, 24)).columns
+            logo = _load_logo(10_000 if pref == "1" else cols - 1)
         self._w(format_welcome(self.mode, self.identity, self.release,
-                               color=self.color, usage=usage))
+                               color=self.color, usage=usage, logo=logo))
 
     def ask(self, label: str = "you", hint: "str | None" = None,
             history_file=None) -> str:
