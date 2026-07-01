@@ -15,7 +15,7 @@ single **seed** release; from there EVA can rewrite, test, and promote new versi
 *itself* inside a hardened Docker sandbox — every self-change a **gated, reversible**
 step, never live surgery on a running system.
 
-![EVA — a work session](docs/Eva-improve.gif)
+![EVA start screen](docs/eva-start.png)
 
 ## What EVA is — and isn't
 
@@ -117,7 +117,14 @@ task, EVA asks for your first message; reply after each turn; empty line or
 
 ## How it evolves
 
-![EVA evolving itself — candidate → gates → promote](docs/Eva-evolve.gif)
+The clip below is a single **`improve`** run, unedited. Asked to *"design and implement
+a skill registry"*, EVA reads its own code (`inspect_self`, `read_file`), clones the
+active release into a safe **candidate** (`make_candidate`), writes a new
+`skill_registry.py` **plus tests**, runs the candidate's suite (`run_tests`), and only
+then **requests promotion** — which the supervisor + kernel gate before anything goes
+live. A real self-change, end to end, under the guardrails.
+
+![EVA improving itself — inspect → candidate → write + test → gated promotion](docs/Eva-improve.gif)
 
 Every session feeds a persistent **friction backlog** (`data/state/backlog.jsonl`):
 real shell/model failures are recorded with an error-specific signature.
