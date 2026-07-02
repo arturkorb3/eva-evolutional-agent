@@ -27,7 +27,7 @@ from human import (ApprovalPolicy, AutoHumanInterface, CliHumanInterface,
 from session import SessionStore
 from self_model import brief as self_model_brief, render_full as self_model_full
 from tui import StatusView
-from tools import CANONICAL_TOOLS, EVOLUTION_TOOLS, ASK_USER_TOOL, FINISH_TOOL_DEF, ShellToolRuntime
+from tools import CANONICAL_TOOLS, EVOLUTION_TOOLS, FINISH_TOOL_DEF, ShellToolRuntime
 
 
 ROOT = pathlib.Path(os.environ.get("ORGANISM_ROOT", pathlib.Path.cwd())).resolve()
@@ -83,7 +83,8 @@ Do useful work for the user inside the workspace.
   do awkwardly, HANDLE it now - and if it looks DURABLE (likely to recur), also record it
   with note_evolution_need using a STABLE signature (a slug for the capability class). A
   one-off is fine to just do; only a need that RECURS is proposed as a real skill to evolve.
-- If you lack information, use ask_user instead of guessing.
+- If you lack information needed to proceed, ASK the user in your reply (plain text,
+  no tool); your turn ends and the conversation continues - don't guess.
 - If the user only asks a question or makes small talk, ANSWER directly in your
   reply and do NOT call any tool. Reserve `finish` for when an actual work TASK is
   complete, and then give just a SHORT summary - never put a long answer or
@@ -362,7 +363,7 @@ def tools_for(mode: str):
     if mode in ("improve", "evolve"):
         # evolution modes may also ask the supervisor/kernel to promote a candidate.
         return list(EVOLUTION_TOOLS)
-    # work/review: read/write via shell, ask_user, finish (runtime blocks writes
+    # work/review: read/write via shell, finish (runtime blocks writes
     # in review).
     return list(CANONICAL_TOOLS)
 
@@ -528,6 +529,117 @@ def maybe_pivot(signature: str, mode: str, human, *, kind: str = "friction") -> 
 # --------------------------------------------------------------------------- #
 # Run a mode
 # --------------------------------------------------------------------------- #
+def _prompt_user(view, commands=None):
+    """Read one user message for the interactive loop, transparently handling local
+    /commands (they NEVER reach the model) and exit words. Returns the message text, or
+    None to end the session. `commands` maps "/name" -> handler(arg) for stateful
+    commands (/model, /provider, /resume); they run locally and re-prompt. /paste and
+    any other text pass straight through."""
+    commands = commands or {}
+    while True:
+        line = view.ask(history_file=INPUT_HISTORY)
+        s = (line or "").strip()
+        if not s or s.lower() in {"exit", "quit", "q", "bye"}:
+            return None
+        name, _, arg = s.partition(" ")
+        low = name.lower()
+        if low in {"/help", "/h", "/?", "/commands", "/command"}:
+            view.slash_help()
+            continue
+        if low in {"/exit", "/quit", "/q"}:
+            return None
+        if low in commands:
+            commands[low](arg.strip())
+            continue
+        return line
+
+
+class _ChatState:
+    """Mutable interactive state shared with the /model, /provider and /resume commands so
+    they can rebuild the model adapter or switch the active work session mid-conversation.
+    Passed as a plain injected object (not module globals) so the commands stay
+    unit-testable in isolation."""
+
+    def __init__(self, *, adapter, identity, session, session_id, system):
+        self.adapter = adapter
+        self.identity = identity
+        self.session = session
+        self.session_id = session_id
+        self.system = system
+        self.switched = False
+
+
+def _rebuild_adapter(state, view) -> bool:
+    """Rebuild the adapter from the (just-mutated) environment. On failure keep the old
+    one and report - a bad /model or /provider must never crash the session."""
+    try:
+        adapter = make_adapter()
+    except SystemExit as exc:
+        view.notice(f"could not switch: {exc}")
+        return False
+    except Exception as exc:  # pragma: no cover - defensive
+        view.notice(f"could not switch: {type(exc).__name__}: {exc}")
+        return False
+    state.adapter = adapter
+    state.identity = adapter.identity() if hasattr(adapter, "identity") else {}
+    view.notice(f"now using provider={state.identity.get('adapter', '?')} "
+                f"model={state.identity.get('model', '?')}")
+    return True
+
+
+def _set_or_clear_env(name, value):
+    """Restore an env var to a prior value (None -> remove it)."""
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
+
+
+def _cmd_model(state, arg, view):
+    """/model [id] - show the current model, or switch it WITHIN the current provider (rebuilds
+    the adapter). The provider + credentials are a launch-time choice: to change them, edit
+    .env (EVA_PROVIDER / EVA_API_KEY) and restart."""
+    provider = state.identity.get("adapter", "?")
+    if not arg:
+        view.notice(f"model={state.identity.get('model', '?')} (provider={provider})  -  "
+                    f"switch with: /model <id>; to change provider, edit .env and restart.")
+        return
+    prev = os.environ.get("EVA_MODEL")
+    os.environ["EVA_MODEL"] = arg
+    if not _rebuild_adapter(state, view):
+        _set_or_clear_env("EVA_MODEL", prev)
+        return
+    view.notice(f"note: model only - it must be one that provider '{provider}' serves; "
+                f"to switch provider, edit .env and restart.")
+
+
+def _cmd_resume(state, arg, view, mode, interactive):
+    """/resume [id] - (work mode) list resumable sessions, or switch to one, replaying it."""
+    if mode != "work":
+        view.notice("/resume switches work sessions; it is only available in work mode.")
+        return
+    target = arg.split()[0] if arg else ""
+    if not target:
+        view.session_overview(_work_session_rows(), current=state.session_id)
+        view.notice("switch with: /resume <id>")
+        return
+    if not (_work_dir(target) / "events.jsonl").exists():
+        view.notice(f"no such work session: {target}")
+        return
+    new = SessionStore(_work_dir(target) / "events.jsonl")
+    if not new.load():
+        view.notice(f"could not load session {target}.")
+        return
+    state.session = new
+    state.session_id = target
+    state.system = system_for(mode, new.path)
+    state.switched = True
+    _write_latest_work(target)
+    if interactive:
+        view.replay(new.events(), clean_user=_clean_user_text)
+    view.notice(f"switched to work session {target} ({len(new.events())} events).")
+
+
 def run_mode(mode: str, task: str):
     ensure_dirs()
 
@@ -565,6 +677,7 @@ def run_mode(mode: str, task: str):
         _write_latest_work(session_id)
     else:
         session = SessionStore(STATE / f"session.{mode}.jsonl")
+        session_id = None
         want_resume = (task or "").strip().lower() == "resume"
 
     adapter = make_adapter()
@@ -576,6 +689,17 @@ def run_mode(mode: str, task: str):
     system = system_for(mode, session.path)
     interactive = (not AUTO_YES) and mode in {"work", "improve", "review"}
 
+    # Mutable interactive state + the in-chat commands that act on it: /model and /provider
+    # rebuild the adapter; /resume switches the active work session. Available at EVERY prompt
+    # (including the first) - a /resume at the first prompt sets state.switched so the fresh
+    # seed below is skipped in favour of appending to the switched-in session.
+    state = _ChatState(adapter=adapter, identity=identity, session=session,
+                       session_id=session_id, system=system)
+    commands = {
+        "/model": lambda a: _cmd_model(state, a, view),
+        "/resume": lambda a: _cmd_resume(state, a, view, mode, interactive),
+    }
+
     view.welcome(usage=interactive)
     if mode == "work":
         if interactive and not want_resume:
@@ -585,17 +709,17 @@ def run_mode(mode: str, task: str):
 
     resumed = False
     if want_resume:
-        if session.resumable(mode) and session.load():
+        if state.session.resumable(mode) and state.session.load():
             if interactive:
                 # Replay the prior conversation so the human can pick up the thread,
                 # then prompt them for the next message (below). Do NOT auto-run, and do
                 # NOT inject a synthetic 'Continue' user turn - that polluted the log and
                 # made EVA think the user kept typing "Continue the previous session.".
-                view.replay(session.events(), clean_user=_clean_user_text)
+                view.replay(state.session.events(), clean_user=_clean_user_text)
             else:
                 # Autonomous resume (AUTO_YES) has no human to prompt: nudge EVA on.
-                session.append(Event(role="user", content="Continue the previous session."))
-            print(f"\n(resuming previous {mode} session: {len(session.events())} events)")
+                state.session.append(Event(role="user", content="Continue the previous session."))
+            print(f"\n(resuming previous {mode} session: {len(state.session.events())} events)")
             resumed = True
         else:
             print("\n(no resumable session found; starting fresh)")
@@ -605,29 +729,35 @@ def run_mode(mode: str, task: str):
     if not resumed:
         if not (task or "").strip():
             if interactive:
-                task = view.ask(history_file=INPUT_HISTORY)
-                if not task or task.lower() in {"exit", "quit", "q", "bye"}:
+                task = _prompt_user(view, commands)
+                if not task:
                     print("Nothing to do — bye.")
                     return
             else:
                 task = default_task_for(mode)
 
-        context = (
-            f"Mode: {mode}\n"
-            f"Modes available: work, improve, review, evolve\n"
-            f"Root: {ROOT}\n"
-            f"Workspace (writable; shell runs here - use RELATIVE paths): {WORKSPACE}\n"
-            f"Active release: {RELEASE.name}  (from your shell cwd: ../runtime/releases/{RELEASE.name})\n"
-            f"{ENV_CAPABILITIES}\n\n"
-            f"{self_model_brief()}\n\n"
-            f"Friction backlog (repeat counts):\n{backlog_summary()}"
-        )
-        task_text, task_images = extract_image_attachments(task, WORKSPACE)
-        session.seed([
-            Event(role="system", content=system),
-            Event(role="user", content=task_text + "\n\n" + context,
-                  images=task_images),
-        ], mode)
+        if state.switched:
+            # /resume at the first prompt switched us onto an existing session: the typed
+            # line is the next message in THAT conversation, not a fresh seed.
+            task_text, task_images = extract_image_attachments(task, WORKSPACE)
+            state.session.append(Event(role="user", content=task_text, images=task_images))
+        else:
+            context = (
+                f"Mode: {mode}\n"
+                f"Modes available: work, improve, review, evolve\n"
+                f"Root: {ROOT}\n"
+                f"Workspace (writable; shell runs here - use RELATIVE paths): {WORKSPACE}\n"
+                f"Active release: {RELEASE.name}  (from your shell cwd: ../runtime/releases/{RELEASE.name})\n"
+                f"{ENV_CAPABILITIES}\n\n"
+                f"{self_model_brief()}\n\n"
+                f"Friction backlog (repeat counts):\n{backlog_summary()}"
+            )
+            task_text, task_images = extract_image_attachments(task, WORKSPACE)
+            state.session.seed([
+                Event(role="system", content=state.system),
+                Event(role="user", content=task_text + "\n\n" + context,
+                      images=task_images),
+            ], mode)
 
     pivoted = {"flag": False}
 
@@ -654,7 +784,7 @@ def run_mode(mode: str, task: str):
 
     def on_error(stage: str, exc: Exception):
         view.error(stage, exc)
-        sig = (llm_error_signature(getattr(adapter, "endpoint", "llm"), exc)
+        sig = (llm_error_signature(getattr(state.adapter, "endpoint", "llm"), exc)
                if stage == "model" else f"crash:{type(exc).__name__}")
         backlog_append({"kind": "execution_error", "mode": mode,
                         "signature": sig, "detail": str(exc)[:300]})
@@ -667,19 +797,19 @@ def run_mode(mode: str, task: str):
         # replay and type the next message BEFORE EVA runs, instead of auto-replying.
         if needs_user_input_first:
             needs_user_input_first = False
-            reply = view.ask(history_file=INPUT_HISTORY)
-            if not reply or reply.lower() in {"exit", "quit", "q", "bye"}:
+            reply = _prompt_user(view, commands)
+            if not reply:
                 break
             reply_text, reply_images = extract_image_attachments(reply, WORKSPACE)
-            session.append(Event(role="user", content=reply_text, images=reply_images))
+            state.session.append(Event(role="user", content=reply_text, images=reply_images))
 
         # Build the (compacted) turn view from the canonical log on each loop.
         outcome = run_agent_loop(
-            adapter=adapter,
+            adapter=state.adapter,
             runtime=runtime,
-            session=_CompactSession(session, HISTORY_BUDGET, HISTORY_KEEP),
+            session=_CompactSession(state.session, HISTORY_BUDGET, HISTORY_KEEP),
             tools=tools_for(mode),
-            system=system,
+            system=state.system,
             mode=mode,
             on_say=on_say,
             on_say_delta=on_say_delta,
@@ -694,18 +824,18 @@ def run_mode(mode: str, task: str):
         if not interactive or outcome == "finish":
             if not interactive:
                 break
-        reply = view.ask(history_file=INPUT_HISTORY)
-        if not reply or reply.lower() in {"exit", "quit", "q", "bye"}:
+        reply = _prompt_user(view, commands)
+        if not reply:
             break
         reply_text, reply_images = extract_image_attachments(reply, WORKSPACE)
-        session.append(Event(role="user", content=reply_text, images=reply_images))
+        state.session.append(Event(role="user", content=reply_text, images=reply_images))
 
     # Interactive sessions stay resumable when you leave, so `<mode> resume`
     # continues the conversation even if the agent called `finish` for a turn.
     # Only an autonomous (non-interactive) finish clears it; a fresh start
     # overwrites it anyway.
     if outcome == "finish" and not interactive and not pivoted["flag"]:
-        session.clear()
+        state.session.clear()
 
 
 class _CompactSession:

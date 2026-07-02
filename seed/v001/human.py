@@ -6,7 +6,7 @@ agent independent of HOW a human answers (CLI today; web, TUI, API or a test
 double tomorrow) and lets autonomous/CI runs proceed without blocking.
 
 Two concerns are separated:
-  - HumanInterface : ask an open question / confirm a yes-no.
+  - HumanInterface : confirm a yes-no (approvals).
   - ApprovalPolicy : decide WHEN a human must confirm a risky action.
 """
 from __future__ import annotations
@@ -179,9 +179,6 @@ class HumanInterface:
 
     interactive = True
 
-    def ask(self, question: str) -> str:
-        raise NotImplementedError
-
     def confirm(self, prompt: str, detail: "str | None" = None) -> bool:
         raise NotImplementedError
 
@@ -190,13 +187,6 @@ class CliHumanInterface(HumanInterface):
     """Local CLI: prompts on stdin/stdout."""
 
     interactive = True
-
-    def ask(self, question: str) -> str:
-        try:
-            sys.stdout.flush()
-            return input("Your answer: ").strip()
-        except EOFError:
-            return ""
 
     def confirm(self, prompt: str, detail: "str | None" = None) -> bool:
         # When a `detail` (e.g. the full shell command) is available, offer an 'f'
@@ -218,18 +208,13 @@ class CliHumanInterface(HumanInterface):
 class AutoHumanInterface(HumanInterface):
     """Non-interactive (CI / --yes / autonomous evolve).
 
-    Open questions get a neutral "no human available" answer so the agent
-    proceeds with its best assumption; confirmations follow a fixed default.
+    Confirmations follow a fixed default so the agent proceeds without blocking.
     """
 
     interactive = False
 
     def __init__(self, *, default_confirm: bool = True):
         self.default_confirm = default_confirm
-
-    def ask(self, question: str) -> str:
-        print("\nAGENT ASKS (auto):", question)
-        return "No interactive user available. Proceed with your best assumption."
 
     def confirm(self, prompt: str, detail: "str | None" = None) -> bool:
         print(prompt + (" [auto-yes]" if self.default_confirm else " [auto-no]"))

@@ -179,7 +179,7 @@ def brief(release: pathlib.Path | None = None) -> str:
         f"docs: read your own anatomy, {len(skills(release))} skills and "
         f"{len(capabilities(release))} ratchet-pinned capabilities ON DEMAND via the "
         f"inspect_self tool (topics: overview | anatomy | skills | capabilities | "
-        f"policy | sandbox | a filename | a capability name)."
+        f"policy | sandbox | model | a filename | a capability name)."
     )
 
 
@@ -228,6 +228,20 @@ def sandbox(release: pathlib.Path | None = None) -> str:
             "evolve).")
 
 
+def backend(release: pathlib.Path | None = None) -> str:
+    """The LLM backend currently in use (provider + model), read from the ENVIRONMENT so it
+    always reflects live /model and /provider switches. Like sandbox() this is RUNTIME
+    config, not code - it lets EVA answer 'which model am I on right now?' truthfully even
+    after an in-session switch (the /model and /provider commands set these env vars)."""
+    provider = (os.environ.get("EVA_PROVIDER") or "openai_chat").strip().lower()
+    model = (os.environ.get("EVA_MODEL") or os.environ.get("LLM_MODEL") or "?").strip()
+    tool_mode = (os.environ.get("EVA_TOOL_MODE") or "native").strip().lower()
+    return (f"Backend (runtime, from the environment): provider={provider} model={model} "
+            f"tool_mode={tool_mode}. The model is switchable mid-session with /model (within this "
+            f"provider); the provider is a launch choice - change it in .env and restart. This is "
+            f"your model wiring, NOT part of your code/self-model.")
+
+
 def lookup(topic: str | None = None, release: pathlib.Path | None = None) -> str:
     """Single entry point for on-demand self-inspection (used by the inspect_self
     tool). Routes a topic word to the right slice of the self-model."""
@@ -259,6 +273,8 @@ def lookup(topic: str | None = None, release: pathlib.Path | None = None) -> str
         return "\n".join(lines)
     if t in ("sandbox", "containment", "free", "safe", "free mode", "safe mode"):
         return sandbox(release)
+    if t in ("model", "provider", "backend", "llm", "adapter"):
+        return backend(release)
     return detail(topic or "", release)
 
 

@@ -5,9 +5,10 @@ The model may only ASK to run a tool. EVA owns the decision, the gating, the
 logging and the execution. This is where "the agent" actually touches the world.
 
 The starting toolset is intentionally tiny and shell-centric (the cheap,
-elementary tool): `shell`, plus `ask_user` (human-in-the-loop) and `finish`.
-More tools are added by defining a canonical Tool here - adapters render them
-automatically.
+elementary tool): `shell` plus `finish`. Questions to the human go through plain
+conversation (a no-tool reply ends the turn and the loop prompts the user), not a
+dedicated tool. More tools are added by defining a canonical Tool here - adapters
+render them automatically.
 """
 from __future__ import annotations
 
@@ -50,17 +51,6 @@ SHELL_TOOL = Tool(
     },
 )
 
-ASK_USER_TOOL = Tool(
-    name="ask_user",
-    description="Ask the human ONE question when you genuinely lack information "
-                "needed to proceed. Prefer asking over guessing.",
-    input_schema={
-        "type": "object",
-        "properties": {"question": {"type": "string"}},
-        "required": ["question"],
-    },
-)
-
 FINISH_TOOL_DEF = Tool(
     name="finish",
     description="End the current turn with a short summary of what was done.",
@@ -76,9 +66,9 @@ INSPECT_SELF_TOOL = Tool(
     description="Read your OWN self-model on demand - you are a self-evolving agent "
                 "and are not preloaded with full docs. Returns your anatomy "
                 "(file->role), skills (tools), ratchet-pinned capabilities, the "
-                "per-mode security policy, or the current sandbox (safe/free). `topic` "
-                "selects the slice: 'overview' (default), 'anatomy', 'skills', "
-                "'capabilities', 'policy', 'sandbox', or the name "
+                "per-mode security policy, the current sandbox (safe/free), or your live "
+                "model/provider backend. `topic` selects the slice: 'overview' (default), "
+                "'anatomy', 'skills', 'capabilities', 'policy', 'sandbox', 'model', or the name "
                 "of a file/capability/skill for detail (a filename also returns that "
                 "module's docstring). Use it before editing yourself so you target the "
                 "right file.",
@@ -262,7 +252,7 @@ REQUEST_PROMOTION_TOOL = Tool(
 CANONICAL_TOOLS: list[Tool] = [SHELL_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL,
                               REPLACE_IN_FILE_TOOL, APPLY_PATCH_TOOL, FETCH_URL_TOOL,
                               WEB_SEARCH_TOOL, INSPECT_SELF_TOOL, NOTE_EVOLUTION_NEED_TOOL,
-                              ASK_USER_TOOL, FINISH_TOOL_DEF]
+                              FINISH_TOOL_DEF]
 # Extra tools available only when the agent may evolve the release: build a candidate,
 # run its tests, and request promotion.
 EVOLUTION_TOOLS: list[Tool] = CANONICAL_TOOLS + [MAKE_CANDIDATE_TOOL, RUN_TESTS_TOOL,
@@ -473,8 +463,8 @@ def _declined(call: ToolCall, action: str) -> ToolObservation:
 # The runtime
 # --------------------------------------------------------------------------- #
 class ShellToolRuntime:
-    """Executes canonical tool calls. `shell` runs in the workspace; `ask_user`
-    routes to the HumanInterface; `finish` returns its summary."""
+    """Executes canonical tool calls. `shell` runs in the workspace; `finish`
+    returns its summary."""
 
     def __init__(self, *, workspace: pathlib.Path, approval: ApprovalPolicy,
                  human: HumanInterface, releases: "pathlib.Path | None" = None,
@@ -505,12 +495,6 @@ class ShellToolRuntime:
         if call.name == "finish":
             summary = str(call.arguments.get("summary", "") or "Finished.")
             return ToolObservation(call.id, call.name, summary)
-
-        if call.name == "ask_user":
-            question = str(call.arguments.get("question", "") or "(no question)")
-            answer = self.human.ask(question)
-            return ToolObservation(call.id, call.name,
-                                   "User answered: " + (answer or "(no answer)"))
 
         if call.name == "shell":
             return self._run_shell(call, mode)

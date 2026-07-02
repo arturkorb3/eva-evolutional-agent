@@ -128,7 +128,7 @@ def run_agent(mode, task=None):
     env["ORGANISM_ROOT"] = str(ROOT)
     env["ACTIVE_RELEASE"] = str(RELEASE)
     print("\n$", " ".join(map(str, cmd)))
-    # Inherit stdio: the agent is interactive (approvals, ask_user). Capturing
+    # Inherit stdio: the agent is interactive (approvals, user prompts). Capturing
     # would hide prompts and block input.
     return subprocess.call([str(x) for x in cmd], cwd=ROOT, env=env) == 0
 

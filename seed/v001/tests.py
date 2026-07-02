@@ -95,25 +95,26 @@ def check_core_loop_executes_and_finishes():
         assert "hello" in joined, "shell observation not recorded in the event log"
 
 
-def check_ask_user_routes_to_human():
-    """The ask_user tool is answered by the HumanInterface, not invented by the model."""
+def check_plain_answer_hands_back_to_human():
+    """ask_user is gone: a no-tool answer ends the turn as 'final', so the interactive loop hands control back to the human."""
+    from session import SessionStore
+    # The dedicated tool was removed - questions now go through plain conversation.
+    assert not any(getattr(t, "name", "") == "ask_user" for t in tools_mod.CANONICAL_TOOLS), \
+        "ask_user must be removed from CANONICAL_TOOLS"
     with tempfile.TemporaryDirectory() as d:
         ws = pathlib.Path(d)
-
-        class Canned(human_mod.HumanInterface):
-            def ask(self, q):
-                return "blue"
-
-            def confirm(self, p, detail=None):
-                return True
-
         runtime = tools_mod.ShellToolRuntime(
             workspace=ws,
-            approval=human_mod.ApprovalPolicy(Canned(), mode="never"),
-            human=Canned(),
+            approval=human_mod.ApprovalPolicy(human_mod.AutoHumanInterface(), mode="never"),
+            human=human_mod.AutoHumanInterface(),
         )
-        obs = runtime.execute(core.ToolCall("1", "ask_user", {"question": "color?"}), "work")
-        assert "blue" in obs.output, obs.output
+        store = SessionStore(ws / "s.jsonl")
+        store.seed([core.Event(role="system", content="s"),
+                    core.Event(role="user", content="hi")], "work")
+        adapter = adapters.FakeAdapter([core.ModelResult(say="which file do you mean?", tool_calls=[])])
+        outcome = core.run_agent_loop(adapter=adapter, runtime=runtime, session=store,
+                                      tools=tools_mod.CANONICAL_TOOLS, system="s", mode="work")
+        assert outcome == "final", outcome
 
 
 def check_adapter_json_protocol_parsing():
@@ -441,9 +442,6 @@ def check_read_only_whitelist_excludes_unavailable_tools():
 def check_approval_policy_gates_shell():
     """ApprovalPolicy gates risky shell per mode, with the allow_shell short-circuit."""
     class No(human_mod.HumanInterface):
-        def ask(self, q):
-            return ""
-
         def confirm(self, p, detail=None):
             return False
 
@@ -600,7 +598,7 @@ def check_capability_floor_concepts():
     agent = _release_text("agent.py").lower()
     assert "backlog" in agent or "friction" in agent, "must keep a friction memory"
     assert "pivot" in agent or "improve" in agent, "must keep a self-improvement path"
-    assert "ask_user" in agent or "human" in agent, "must keep human-in-the-loop"
+    assert "human" in agent, "must keep human-in-the-loop"
 
 
 def check_modes_supported():
@@ -1607,6 +1605,154 @@ def check_ratchet_count_is_executed_not_static():
     n = int(r.stdout.strip().splitlines()[-1])
     assert n == len(_all_checks()), f"{n} != {len(_all_checks())}"
     assert n >= 20
+
+
+def check_slash_commands_help_and_exit():
+    """In-chat /help renders the command list, /exit ends, other text (incl. /paste) passes through."""
+    import tui
+    import agent
+
+    help_txt = tui.format_slash_help(color=False)
+    assert "/help" in help_txt and "/paste" in help_txt, "help must list the in-chat commands"
+    assert "eva help" in help_txt, "help should point to the shell `eva help` for the full list"
+    # The start screen must advertise /help so it is discoverable.
+    welcome = tui.format_welcome("work", {"model": "m"}, "v001", color=False)
+    assert "/help" in welcome, "welcome banner should hint at /help"
+
+    class _StubView:
+        def __init__(self, lines):
+            self._lines = list(lines)
+            self.help_calls = 0
+
+        def ask(self, history_file=None):
+            return self._lines.pop(0)
+
+        def slash_help(self):
+            self.help_calls += 1
+
+    # /help is consumed locally (re-prompt), never sent on, then the real message returns.
+    v = _StubView(["/help", "do the thing"])
+    assert agent._prompt_user(v) == "do the thing"
+    assert v.help_calls == 1, "/help must render the list rather than reach the model"
+    # Exit words and /exit end the session.
+    assert agent._prompt_user(_StubView(["exit"])) is None
+    assert agent._prompt_user(_StubView(["/exit"])) is None
+    # /paste and plain text pass straight through to the attachment/model layer.
+    assert agent._prompt_user(_StubView(["/paste look at this"])) == "/paste look at this"
+
+
+def check_in_chat_model_and_resume_commands():
+    """/model switches the model within the current provider (rebuilds the adapter); /resume switches the work session; both dispatched via _prompt_user."""
+    import os as _os
+    import tempfile
+    import pathlib as _pl
+    import tui
+    import agent
+    from session import SessionStore
+
+    # The in-chat help advertises /model and /resume, but NOT a /provider switch
+    # (in-session provider switching was dropped; the provider is set in .env at launch).
+    h = tui.format_slash_help(color=False)
+    for c in ("/model", "/resume"):
+        assert c in h, f"help must list {c}"
+    assert "/provider" not in h, "in-session provider switching was removed"
+
+    notes = []
+
+    class _V:
+        def notice(self, m):
+            notes.append(("notice", m))
+
+        def session_overview(self, rows, current=None):
+            notes.append(("overview", current))
+
+        def replay(self, events, clean_user=None):
+            notes.append(("replay", len(events)))
+
+    class _Ad:
+        def __init__(self, model):
+            self._m = model
+
+        def identity(self):
+            return {"adapter": "openai_chat", "model": self._m}
+
+    # _prompt_user dispatches a registered command (with its argument), then re-prompts
+    # and returns the NEXT real message - the command itself never reaches the model.
+    seen = []
+
+    class _AskView(_V):
+        def __init__(self, lines):
+            self._lines = list(lines)
+
+        def ask(self, history_file=None):
+            return self._lines.pop(0)
+
+    av = _AskView(["/model gpt-x", "hello"])
+    msg = agent._prompt_user(av, {"/model": lambda a: seen.append(a)})
+    assert seen == ["gpt-x"] and msg == "hello", "command dispatched with its arg, then message returned"
+
+    # /model switches the model within the current provider (rebuilds the adapter).
+    state = agent._ChatState(adapter=_Ad("old"), identity={"adapter": "openai_chat", "model": "old"},
+                             session=None, session_id="s0", system="SYS")
+    orig_make = agent.make_adapter
+    _prev_model = _os.environ.get("EVA_MODEL")
+    try:
+        agent.make_adapter = lambda: _Ad(_os.environ.get("EVA_MODEL", "?"))
+        agent._cmd_model(state, "m2", _V())
+        assert _os.environ.get("EVA_MODEL") == "m2" and state.identity["model"] == "m2"
+        assert state.adapter._m == "m2"
+    finally:
+        agent.make_adapter = orig_make
+        if _prev_model is None:
+            _os.environ.pop("EVA_MODEL", None)
+        else:
+            _os.environ["EVA_MODEL"] = _prev_model
+
+    # /resume is guarded to work mode.
+    agent._cmd_resume(state, "whatever", _V(), "review", True)
+    assert any(k == "notice" and "work mode" in m for k, m in notes), "resume is work-mode only"
+
+    # /resume switches to an existing work session and replays it.
+    orig_sessions = agent.SESSIONS
+    try:
+        agent.SESSIONS = _pl.Path(tempfile.mkdtemp())
+        sid = "20260101-000000-abcd"
+        agent._work_dir(sid).mkdir(parents=True, exist_ok=True)
+        SessionStore(agent._work_dir(sid) / "events.jsonl").seed(
+            [agent.Event(role="system", content="s"),
+             agent.Event(role="user", content="prior")], "work")
+        st2 = agent._ChatState(adapter=_Ad("m"), identity={"adapter": "openai_chat", "model": "m"},
+                               session=None, session_id="other", system="S")
+        agent._cmd_resume(st2, sid, _V(), "work", True)
+        assert st2.session_id == sid and st2.session is not None, "resume switched the active session"
+        assert st2.switched is True, "a successful /resume flags the switch (so the first-prompt seed is skipped)"
+        assert any(k == "replay" for k, _ in notes), "resume replays the switched-in session"
+    finally:
+        agent.SESSIONS = orig_sessions
+
+
+def check_self_model_exposes_backend():
+    """inspect_self reports the LIVE llm backend (provider/model from env) so a /model switch stays reflected in EVA's self-image."""
+    import os as _os
+    import self_model
+
+    prev = {k: _os.environ.get(k) for k in ("EVA_PROVIDER", "EVA_MODEL", "EVA_TOOL_MODE")}
+    try:
+        _os.environ["EVA_PROVIDER"] = "anthropic"
+        _os.environ["EVA_MODEL"] = "claude-test-9"
+        out = self_model.lookup("model")
+        assert "anthropic" in out and "claude-test-9" in out, out
+        # A later switch is reflected because backend() reads the environment live.
+        _os.environ["EVA_MODEL"] = "gpt-test-2"
+        assert "gpt-test-2" in self_model.lookup("provider"), "backend must read env live"
+        # brief() advertises the topic so EVA knows it can ask on demand.
+        assert "model" in self_model.brief()
+    finally:
+        for k, v in prev.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
 
 
 def _all_checks():

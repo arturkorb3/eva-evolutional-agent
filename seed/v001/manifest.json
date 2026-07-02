@@ -32,16 +32,16 @@
     "tests.py": "LLM-free checks (ratchet)"
   },
   "hashes": {
-    "supervisor.py": "9d7e869712504b12768210e8bd04382ff689a3f616c054239945b8c069efecd3",
-    "agent.py": "d71b7a2483e5f16b9e50be72a39bf32239100c963bc875d85423f3ee37d20e31",
-    "tests.py": "5b08807ba022abc637ba6a9135a51c0e1ef2a435d487c9f25efded26be2ee083",
+    "supervisor.py": "960a5520aea4a2de2e6d0a8d2265d2a95fd5d003351f8fdac0c5dfcc5888b372",
+    "agent.py": "e7d7e4f1defc9b12ead8ae278f0b775b41c68df6fafbfb70f5818e34dcd01d6c",
+    "tests.py": "85458ede5bac73182abe2b9e0c0796303f2d27d4d2fe1d84c15a23d00de58bac",
     "core.py": "c877e3a7733f62cb76a1f8f8c167125d703886a1c6c24607871bc6f361befaea",
     "adapters.py": "4520330baa8bd45e068ee01f79aad32d44d89f82727a1788671e3501ea95b89e",
-    "tools.py": "001a4d5c0df2ae8ea5d938e26dca7dea33836b8368387d1cabab2d00357a8441",
-    "human.py": "341ac345e8456a589c6f9769b8f5c09386ceae3811128f0be0bbf1d068d5e8b6",
+    "tools.py": "197828cb0f0b4af1d7e69ba00e12976d6d3a809e13b7503b91588238b522fb90",
+    "human.py": "9844e6385e3dbb52f56b974a3d64ceb3591d3eaf52180c4b0ec7b4eaba591ebb",
     "session.py": "1f44e3b491b22d1b40447804a4440d1e9cb40a0784c1e84ad0862c147ead7f45",
-    "self_model.py": "574e60b2c04d8c1b49bf5b9ce1c19d5646cfda7315f3b030c12c431f69b1ca9f",
-    "tui.py": "83f762ef79811a8583da9b71f69f96ec0ee92c08d7e5aad4e0b7b80175ef0412",
+    "self_model.py": "55d5414b69cd5eaccd7ba218b985361aff567f2ff3b01ca6dd4708913804bb59",
+    "tui.py": "cd16f71d71bcc1dbfa78e2ac0b3078d256c0686c9567f92612cb02d6f2543406",
     "context.py": "49411ac75aa0a4b8c6b6ae60bda47b0e10fd3a3ce86b34c7cf67ab1d441d2d13",
     "evals.py": "ee3cf8d30a58d62e546ba8d6ff7f6a2162db7ed71f9bbf2ac6ac86c4f7913da9"
   }

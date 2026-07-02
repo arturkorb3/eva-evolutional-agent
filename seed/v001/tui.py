@@ -87,8 +87,6 @@ def summarize_args(name: str, args: dict, limit: int = 72) -> str:
         return _clip(args.get("candidate", ""), limit)
     if name == "note_evolution_need":
         return _clip(args.get("need", ""), limit)
-    if name == "ask_user":
-        return _clip(args.get("question", ""), limit)
     if name == "request_promotion":
         return _clip(args.get("candidate", ""), limit)
     if name == "finish":
@@ -124,8 +122,8 @@ _BRAND_ART = (
 
 _USAGE_TIPS = (
     "Just tell EVA what to do — it works, then replies after each turn.",
+    "Type /help for in-chat commands; /paste attaches your latest screenshot.",
     "Press Enter on an empty line (or type 'exit') to end the session.",
-    "/paste attaches your most recent screenshot.",
     "Set EVA_TUI_FULL=1 to see full commands and complete output.",
 )
 
@@ -186,6 +184,31 @@ def format_welcome(mode: str, identity: dict, release: str, *,
             parts.append(_paint("  • ", "cyan", color=color) + tip)
     parts.append("")
     return "\n".join(parts)
+
+
+_SLASH_COMMANDS = (
+    ("/help", "show this list of in-chat commands"),
+    ("/model", "show or switch the model within the current provider, e.g. /model gpt-5.5"),
+    ("/resume", "list work sessions, or switch to one: /resume <id>  (work mode)"),
+    ("/paste", "attach your most recent screenshot (take one with Win+Shift+S first)"),
+    ("exit", "end the session (or just press Enter on an empty line)"),
+)
+
+
+def format_slash_help(*, color: bool = True) -> str:
+    """The in-chat command list shown when the user types /help (presentation only)."""
+    lines = ["", _paint("  In-chat commands", "bold", color=color)]
+    for cmd, desc in _SLASH_COMMANDS:
+        lines.append("  " + _paint(cmd.ljust(10), "bold", "cyan", color=color) + " " + desc)
+    lines.append("")
+    lines.append(_paint(
+        "  Modes (work/improve/review/evolve) are chosen at launch, e.g. `eva improve`.",
+        "gray", color=color))
+    lines.append(_paint(
+        "  Run `eva help` in your shell for all commands. Otherwise just talk to EVA.",
+        "gray", color=color))
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _is_table_row(s: str) -> bool:
@@ -295,17 +318,15 @@ def format_say(text: str, *, color: bool = True) -> str:
 def format_tool_call(call, *, color: bool = True, full: bool = False) -> str:
     name = getattr(call, "name", "?")
     args = getattr(call, "arguments", {}) or {}
+    arrow = _paint("\u25b8", "bold", "blue", color=color)
     if name == "finish":
         # finish carries EVA's final message to the user - show it IN FULL (preserving
         # line breaks + rendering any markdown table), never truncated like a gist.
         summ = render_markdown_tables(str(args.get("summary", "") or "done").strip())
         head = _paint("\u2713 finished", "bold", "green", color=color)
         return head + (": " + summ if summ else "")
-    # ask_user questions are short and important - don't clip them as hard. Shell
-    # commands are what a human approves, so show a bit more of them too.
-    limit = 100000 if full else (200 if name == "ask_user"
-                                 else 110 if name == "shell" else 72)
-    arrow = _paint("\u25b8", "bold", "blue", color=color)
+    # Shell commands are what a human approves, so show a bit more of them.
+    limit = 100000 if full else (110 if name == "shell" else 72)
     label = _paint(name, "bold", color=color)
     gist = summarize_args(name, args, limit)
     gist = (" " + _paint(gist, "gray", color=color)) if gist else ""
@@ -555,6 +576,14 @@ class StatusView:
             logo = _load_logo(10_000 if pref == "1" else cols - 1)
         self._w(format_welcome(self.mode, self.identity, self.release,
                                color=self.color, usage=usage, logo=logo))
+
+    def slash_help(self) -> None:
+        """Render the in-chat command list (response to a local /help command)."""
+        self._w(format_slash_help(color=self.color))
+
+    def notice(self, msg: str) -> None:
+        """A small dim status line for in-chat command feedback (/model, /provider, /resume)."""
+        self._w(_paint("  " + msg, "gray", color=self.color))
 
     def ask(self, label: str = "you", hint: "str | None" = None,
             history_file=None) -> str:

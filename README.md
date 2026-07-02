@@ -225,9 +225,14 @@ your provider → model → API key and writes it (skip with `EVA_NO_SETUP=1`, o
 eva                     # start a work session (the default mode)
 ```
 
-From here everything is `eva <command>` — type `eva <Tab>` to list them:
+Inside a session, just talk to EVA in plain language; type `/help` for the in-chat commands
+(`/model` switches the model within the current provider, `/resume` picks another work
+session, `/paste` attaches a screenshot, `exit` ends). To change provider/credentials, edit
+`.env` and restart. From your shell, everything is `eva <command>` — type `eva <Tab>` or
+`eva help` to list them:
 
 ```powershell
+eva help                                                   # list every command
 eva improve "add a CHANGELOG and report it in work mode"   # directed self-change
 eva evolve 3 --yes --allow-shell                           # hands-off (Docker contains it)
 eva status                                                 # active / last-good release
