@@ -32,6 +32,22 @@ repair_data_permissions() {
     --entrypoint chown eva -R 10001:10001 /eva/runtime /eva/state /eva/workspace /eva/.local >/dev/null
 }
 
+# On Linux the sandbox writes to ./data as an unprivileged user (uid 10001), but the
+# host-created data dirs are owned by YOU - so the container's first mkdir dies with
+# "Permission denied". Auto-repair ONCE (idempotent, no host sudo) so the first run just
+# works instead of forcing the user to run `fix-perms` by hand. The check is cheap and
+# self-limiting: only GNU `stat -c` (Linux) reports the owner, so on macOS/Docker Desktop
+# (whose mounts remap ownership anyway) it no-ops; once ./data is owned by 10001 it skips.
+ensure_data_writable() {
+  command -v stat >/dev/null 2>&1 || return 0
+  local owner
+  owner="$(stat -c '%u' data/runtime 2>/dev/null || true)"
+  [ -n "$owner" ] || return 0          # non-GNU stat (macOS) -> nothing to do
+  [ "$owner" = "10001" ] && return 0    # already owned by the sandbox user
+  echo "(first run on Linux: repairing ./data ownership for the sandbox user - one-time)" >&2
+  repair_data_permissions || true
+}
+
 # Best-effort clipboard image grab (writes a PNG to $1; returns 0 on success).
 eva_clip_grab() {
   local out="$1"
@@ -206,6 +222,12 @@ eva_onboarding() {
 
 case "$cmd" in
   work|improve|review|evolve) eva_onboarding ;;
+esac
+
+# Auto-repair ./data ownership on Linux before any command that runs the sandbox
+# (the container writes as uid 10001; host-owned dirs would fail with PermissionError).
+case "$cmd" in
+  work|improve|review|evolve|status|reseed|shell|rollback|unlock) ensure_data_writable ;;
 esac
 
 case "$cmd" in

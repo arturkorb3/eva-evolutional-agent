@@ -244,9 +244,10 @@ eva build                                                  # (re)build the sandb
 > `.\run.ps1 <command>` (Windows) or `./run.sh <command>` (Linux/macOS) — that's what `eva`
 > forwards to.
 
-> **Linux note.** The sandbox writes to `./data` as an unprivileged user (uid `10001`), so
-> those files may not be directly deletable by your host user. Run `eva fix-perms` once — it
-> repairs ownership (and, if `setfacl` is available, grants your host user access too).
+> **Linux note.** The sandbox writes to `./data` as an unprivileged user (uid `10001`). EVA
+> **auto-repairs** the ownership on first run, so you normally don't need to do anything. If
+> you also want your host user to read/delete `./data` without `sudo`, run `eva fix-perms`
+> once — it adds an ACL (via `setfacl`) on top of the ownership fix.
 
 ## Using EVA
 
