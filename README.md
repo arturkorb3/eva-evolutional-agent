@@ -141,95 +141,6 @@ responses) and three standing guarantees:
    never lie about its own content. These checks live where the agent can't edit
    them.
 
-## Komponents
-
-| Module | Responsibility |
-|---|---|
-| `core.py` | Provider-neutral turn loop + the `Event`/`Tool`/`ToolCall` types. Knows nothing about providers, CLIs or wire formats, which keeps EVA portable and lets it rewrite any layer without re-inventing the loop.
-| `adapters.py` | `ModelAdapter`s: `openai_chat` (native tool calls or a portable JSON-text fallback), `anthropic` (Claude Messages API + prompt caching) and an offline `fake` for tests. |
-| `tools.py` | Canonical tools + sandboxed runtime + the explicit **mode-policy table** (who may write/shell/promote). |
-| `human.py` | `HumanInterface` + `ApprovalPolicy` (approve `[y/N/f]`; **`f`** reveals the full command) + host clipboard bridge. |
-| `session.py` | Append-only event log = the **source of truth**, with image **blobs** kept out of the log. |
-| `context.py` | Deterministic, LLM-free **compaction** — sends the full log while it fits, then a condensed view. |
-| `self_model.py` | **Generated** self-knowledge: EVA reads its own anatomy/skills/capabilities/policy on demand (it is not preloaded). |
-| `tui.py` | The status view — human-readable, on-the-fly "what is EVA doing now". |
-| `agent.py` | Wiring + the CLI/chat loop; the four modes; the friction backlog and improve-pivot. |
-| `supervisor.py` | Release gates: required files, the **ratchet**, smoke, dry-runs, qualification rounds. |
-| `tests.py` | LLM-free checks — the ratchet itself (every promotion runs them). |
-| `evals.py` | **Golden traces**: recorded provider responses replayed through the *real* adapters + loop + runtime (offline, in the gate) — plus an opt-in live smoke. |
-
-Because the self-model is *generated from the live code*, EVA always knows the
-release it is actually running and its current toolset — `inspect_self`
-(`overview` · `anatomy` · `skills` · `capabilities` · `policy`).
-
-## Modes
-
-`work`, `improve`, and `review` run as an **interactive chat**: started without a
-task, EVA asks for your first message; reply after each turn; empty line or
-`exit` ends it.
-
-| Command | What it does |
-|---|---|
-| `work [task]` | Useful work in `workspace/`. Can inspect itself, but **never** edits its own code. |
-| `review [task]` | Read-only inspection — no writes, no evolution. |
-| `improve [task]` | **Directed** self-change — builds a gated candidate that implements *your* task. |
-| `evolve [N]` | **Autonomous** self-change — EVA picks the improvement, announces it, then implements N rounds. |
-| `<mode> resume` | Continue your previous (interactive) session — each mode keeps its own. |
-| `status` / `rollback` | Show the active/last-good release / roll back along the ledger. |
-| `reseed` | Re-seed `v001` from `seed/` after editing the genome (no rebuild — the seed is mounted). |
-
-## EVA tries to stay good
-
-Self-modification is only safe if EVA can't quietly weaken its own guardrails. The
-defenses are **layered**, and each lives where the layer it protects can't edit it:
-
-- **Gated self-change.** No edit goes live in place. Every change becomes a
-  *candidate* that must clear the LLM-free gates — the **ratchet** (never fewer
-  checks than today), the independent **kernel gate** (core identity + a manifest
-  re-hash so a release can't lie about its content), and a recorded **ledger** for
-  multi-step `rollback`.
-- **The prompt surface is gated too** *(opt-in)*. System prompts and tool
-  descriptions are as security-critical as code, so a candidate's **prompt-surface
-  diff** is screened before promotion: deterministic rules catch gate-weakening,
-  approval-bypass and deception, and an optional **LLM judge** — nonce-guarded and
-  **fail-closed** — reviews the rest (`EVA_PROMPT_AUDIT` / `…_AUDIT_LLM`).
-- **Untrusted content stays untrusted** *(opt-in)*. Tool and web output is framed
-  as data, not instructions (**spotlighting**), so a prompt injection hidden in a
-  fetched page can't quietly redirect EVA (`EVA_PROMPT_SPOTLIGHT`).
-- **Humans stay in the loop.** Risky actions (shell, writes, promotion) need an
-  explicit `y`; anything else is *not* approval — a free-text reply **steers** EVA
-  instead of being obeyed blindly. Secrets come from `.env` and are **never logged**.
-
-None of this makes EVA *trustworthy* — it makes misbehaviour **bounded, visible, and
-reversible**. Containment (below) limits whatever still slips through.
-
-## Contained, not "safe"
-
-Containment limits the *blast radius*; it does not make EVA trustworthy. EVA runs
-inside a hardened container ([`docker-compose.yml`](docker-compose.yml)):
-
-- non-root user, `cap_drop: ALL`, `no-new-privileges`, CPU/memory/PID limits
-- **read-only root filesystem**; only `./data/{runtime,state,workspace,local}` are writable
-- the kernel is baked into the image and **not** mounted — the agent can't touch it
-- secrets come from `.env` at runtime, never baked into the image
-
-Within that box EVA can extend its **own** runtime tooling without an image change:
-a persistent writable HOME (`/eva/.local`) for `pip install --user`, static
-binaries on `PATH`, and HTTP via Python `urllib` or `node` `fetch` (there is no
-`curl`/`wget`). It **cannot** change the image or `organism.py`.
-
-**Safe vs free sandbox — you choose.** By default EVA runs in the **safe** sandbox above.
-For tasks that need system packages (a browser engine's libraries, `apt`), run the **free**
-sandbox — `.\run.ps1 -Free <cmd>` / `./run.sh --free <cmd>` — which layers
-[`docker-compose.free.yml`](docker-compose.free.yml): a **writable root filesystem, root and
-`apt`**. That is a bigger blast radius (root *inside* the container), still contained to the
-container and `./data`, and ephemeral (system installs last only for the session). EVA is
-told which mode it is in (`EVA_SANDBOX`), so in safe mode it recognises a system-library need
-as an *image need* and stops instead of thrashing `apt`. Prefer safe unless you need it.
-
-> **Residual risk:** the container has outbound network access (for the LLM API).
-> For maximum isolation, point EVA at a local model and restrict egress.
-
 ## Quickstart
 
 **Prerequisites:** Docker (Engine + Compose v2) running — Docker Desktop on Windows/macOS, or
@@ -303,6 +214,22 @@ self-evolution is serialized by a kernel lock (`eva unlock` clears a dead one).
 `EVA_TOOL_MODE` selects `native` (function calling, default) or `json_text`
 (portable fallback).
 
+## Modes
+
+`work`, `improve`, and `review` run as an **interactive chat**: started without a
+task, EVA asks for your first message; reply after each turn; empty line or
+`exit` ends it.
+
+| Command | What it does |
+|---|---|
+| `work [task]` | Useful work in `workspace/`. Can inspect itself, but **never** edits its own code. |
+| `review [task]` | Read-only inspection — no writes, no evolution. |
+| `improve [task]` | **Directed** self-change — builds a gated candidate that implements *your* task. |
+| `evolve [N]` | **Autonomous** self-change — EVA picks the improvement, announces it, then implements N rounds. |
+| `<mode> resume` | Continue your previous (interactive) session — each mode keeps its own. |
+| `status` / `rollback` | Show the active/last-good release / roll back along the ledger. |
+| `reseed` | Re-seed `v001` from `seed/` after editing the genome (no rebuild — the seed is mounted). |
+
 ## Inspecting & resetting
 
 Everything EVA does is persisted on the host under `./data/` (git-ignored):
@@ -324,6 +251,79 @@ bin/                 `eva` command shims (eva, eva.cmd) — added to PATH by `ru
 completions/         eva tab-completion (PowerShell / bash / zsh)
 data/                created at runtime; all evolution lives here (git-ignored)
 ```
+
+## EVA tries to stay good
+
+Self-modification is only safe if EVA can't quietly weaken its own guardrails. The
+defenses are **layered**, and each lives where the layer it protects can't edit it:
+
+- **Gated self-change.** No edit goes live in place. Every change becomes a
+  *candidate* that must clear the LLM-free gates — the **ratchet** (never fewer
+  checks than today), the independent **kernel gate** (core identity + a manifest
+  re-hash so a release can't lie about its content), and a recorded **ledger** for
+  multi-step `rollback`.
+- **The prompt surface is gated too** *(opt-in)*. System prompts and tool
+  descriptions are as security-critical as code, so a candidate's **prompt-surface
+  diff** is screened before promotion: deterministic rules catch gate-weakening,
+  approval-bypass and deception, and an optional **LLM judge** — nonce-guarded and
+  **fail-closed** — reviews the rest (`EVA_PROMPT_AUDIT` / `…_AUDIT_LLM`).
+- **Untrusted content stays untrusted** *(opt-in)*. Tool and web output is framed
+  as data, not instructions (**spotlighting**), so a prompt injection hidden in a
+  fetched page can't quietly redirect EVA (`EVA_PROMPT_SPOTLIGHT`).
+- **Humans stay in the loop.** Risky actions (shell, writes, promotion) need an
+  explicit `y`; anything else is *not* approval — a free-text reply **steers** EVA
+  instead of being obeyed blindly. Secrets come from `.env` and are **never logged**.
+
+None of this makes EVA *trustworthy* — it makes misbehaviour **bounded, visible, and
+reversible**. Containment (below) limits whatever still slips through.
+
+## Contained, not "safe"
+
+Containment limits the *blast radius*; it does not make EVA trustworthy. EVA runs
+inside a hardened container ([`docker-compose.yml`](docker-compose.yml)):
+
+- non-root user, `cap_drop: ALL`, `no-new-privileges`, CPU/memory/PID limits
+- **read-only root filesystem**; only `./data/{runtime,state,workspace,local}` are writable
+- the kernel is baked into the image and **not** mounted — the agent can't touch it
+- secrets come from `.env` at runtime, never baked into the image
+
+Within that box EVA can extend its **own** runtime tooling without an image change:
+a persistent writable HOME (`/eva/.local`) for `pip install --user`, static
+binaries on `PATH`, and HTTP via Python `urllib` or `node` `fetch` (there is no
+`curl`/`wget`). It **cannot** change the image or `organism.py`.
+
+**Safe vs free sandbox — you choose.** By default EVA runs in the **safe** sandbox above.
+For tasks that need system packages (a browser engine's libraries, `apt`), run the **free**
+sandbox — `.\run.ps1 -Free <cmd>` / `./run.sh --free <cmd>` — which layers
+[`docker-compose.free.yml`](docker-compose.free.yml): a **writable root filesystem, root and
+`apt`**. That is a bigger blast radius (root *inside* the container), still contained to the
+container and `./data`, and ephemeral (system installs last only for the session). EVA is
+told which mode it is in (`EVA_SANDBOX`), so in safe mode it recognises a system-library need
+as an *image need* and stops instead of thrashing `apt`. Prefer safe unless you need it.
+
+> **Residual risk:** the container has outbound network access (for the LLM API).
+> For maximum isolation, point EVA at a local model and restrict egress.
+
+## Components
+
+| Module | Responsibility |
+|---|---|
+| `core.py` | Provider-neutral turn loop + the `Event`/`Tool`/`ToolCall` types. Knows nothing about providers, CLIs or wire formats, which keeps EVA portable and lets it rewrite any layer without re-inventing the loop.
+| `adapters.py` | `ModelAdapter`s: `openai_chat` (native tool calls or a portable JSON-text fallback), `anthropic` (Claude Messages API + prompt caching) and an offline `fake` for tests. |
+| `tools.py` | Canonical tools + sandboxed runtime + the explicit **mode-policy table** (who may write/shell/promote). |
+| `human.py` | `HumanInterface` + `ApprovalPolicy` (approve `[y/N/f]`; **`f`** reveals the full command) + host clipboard bridge. |
+| `session.py` | Append-only event log = the **source of truth**, with image **blobs** kept out of the log. |
+| `context.py` | Deterministic, LLM-free **compaction** — sends the full log while it fits, then a condensed view. |
+| `self_model.py` | **Generated** self-knowledge: EVA reads its own anatomy/skills/capabilities/policy on demand (it is not preloaded). |
+| `tui.py` | The status view — human-readable, on-the-fly "what is EVA doing now". |
+| `agent.py` | Wiring + the CLI/chat loop; the four modes; the friction backlog and improve-pivot. |
+| `supervisor.py` | Release gates: required files, the **ratchet**, smoke, dry-runs, qualification rounds. |
+| `tests.py` | LLM-free checks — the ratchet itself (every promotion runs them). |
+| `evals.py` | **Golden traces**: recorded provider responses replayed through the *real* adapters + loop + runtime (offline, in the gate) — plus an opt-in live smoke. |
+
+Because the self-model is *generated from the live code*, EVA always knows the
+release it is actually running and its current toolset — `inspect_self`
+(`overview` · `anatomy` · `skills` · `capabilities` · `policy`).
 
 ## Honest limitations
 
