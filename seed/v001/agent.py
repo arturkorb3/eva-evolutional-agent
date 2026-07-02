@@ -821,6 +821,18 @@ def run_mode(mode: str, task: str):
 
         if pivoted["flag"] or outcome == "error":
             break
+
+        if outcome == "maxsteps":
+            # Ran the whole step budget without finishing. This used to end SILENTLY (looking
+            # like "done"); surface it, and if there's a human let them decide to keep going
+            # (continue re-runs another batch on the same session - no new instruction needed).
+            view.notice("reached the step limit without finishing this turn.")
+            if not interactive:
+                break
+            if not human.confirm("Keep working on this task?"):
+                break
+            continue
+
         if not interactive or outcome == "finish":
             if not interactive:
                 break

@@ -1755,6 +1755,32 @@ def check_self_model_exposes_backend():
                 _os.environ[k] = v
 
 
+def check_loop_stops_at_max_steps():
+    """run_agent_loop returns 'maxsteps' when the model never calls finish, so run_mode can surface it and ask whether to keep going (instead of ending silently)."""
+    import tempfile
+    import pathlib
+    from session import SessionStore
+
+    ws = pathlib.Path(tempfile.mkdtemp())
+    runtime = tools_mod.ShellToolRuntime(
+        workspace=ws,
+        approval=human_mod.ApprovalPolicy(human_mod.AutoHumanInterface(), mode="never"),
+        human=human_mod.AutoHumanInterface())
+    store = SessionStore(ws / "s.jsonl")
+    store.seed([core.Event(role="system", content="s"),
+                core.Event(role="user", content="go")], "work")
+
+    def never_finish(turn):
+        # Always call a read-only tool, never `finish` -> the loop must run out of steps.
+        return core.ModelResult(say="", tool_calls=[
+            core.ToolCall(id="x", name="inspect_self", arguments={"topic": "overview"})])
+
+    outcome = core.run_agent_loop(
+        adapter=adapters.FakeAdapter(never_finish), runtime=runtime, session=store,
+        tools=tools_mod.CANONICAL_TOOLS, system="s", mode="work", max_steps=3)
+    assert outcome == "maxsteps", outcome
+
+
 def _all_checks():
     return [v for k, v in sorted(globals().items())
             if k.startswith(("check_", "test_")) and callable(v)]

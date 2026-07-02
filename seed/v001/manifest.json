@@ -33,8 +33,8 @@
   },
   "hashes": {
     "supervisor.py": "960a5520aea4a2de2e6d0a8d2265d2a95fd5d003351f8fdac0c5dfcc5888b372",
-    "agent.py": "e7d7e4f1defc9b12ead8ae278f0b775b41c68df6fafbfb70f5818e34dcd01d6c",
-    "tests.py": "85458ede5bac73182abe2b9e0c0796303f2d27d4d2fe1d84c15a23d00de58bac",
+    "agent.py": "177c1a681c9e259369069ff0150b98d8dbb47550326ef64346aba0c8bb900b0b",
+    "tests.py": "da3f9e37dab1c1dd67eafcc8a7db3868c83e664c18b5fcd562bd20e78005fe4a",
     "core.py": "c877e3a7733f62cb76a1f8f8c167125d703886a1c6c24607871bc6f361befaea",
     "adapters.py": "4520330baa8bd45e068ee01f79aad32d44d89f82727a1788671e3501ea95b89e",
     "tools.py": "197828cb0f0b4af1d7e69ba00e12976d6d3a809e13b7503b91588238b522fb90",
