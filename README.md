@@ -10,7 +10,7 @@
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 > [!WARNING]
-> **Experimental and self-modifying.** EVA runs arbitrary shell commands and
+> **Experimental and self-modifying.** EVA runs shell commands and
 > rewrites its own source code. **Only ever run it inside the provided Docker
 > sandbox** — never directly on a host or against data you care about.
 
@@ -25,38 +25,32 @@ step, never live surgery on a running system.
 
 ## What EVA is — and isn't
 
-EVA is not a finished agent architecture. It is a **safe architecture for evolving one.**
+EVA is not a finished agent architecture. It is a **meta-architecture for evolving agent-architectures.**
 
 - **Fixed meta-architecture** (the kernel): seed → candidate → gate → promote →
   ledger → rollback. The agent can never touch it.
 - **Evolvable agent-architecture** (the release): the loop, tools, adapters,
   memory, self-model, TUI — all of `seed/v001` is only *generation 0*. EVA
-  rewrites copies of it under the gates.
+  evolves copies of it under the gates.
 
 That makes EVA **bounded architecture-agnostic**: not "no architecture", but
-"architecture as a gated, reversible, evolvable state." Platform agents ship the
+"architecture as a gated, reversible, evolvable state." Big platform agents and frameworks ship the
 structure — gateway, skill registry, channels, scheduler. EVA ships the
-**mechanism to grow one under control**, so two different uses can, over many
+**mechanism to grow an agent and its structure under control**, so two different uses can, over many
 generations, grow two different EVAs — without ever weakening the kernel, gates,
 or policies.
 
-The seed is deliberately the **smallest viable organism plus an immune system**
-(gates, ratchet, policies, manifest hashes), not a product. New organs are
-*earned* through use, then optionally folded back into a later seed.
-
-## How EVA differs
-
-Most autonomous-agent projects ship a **fixed architecture** (gateway, skill
-registry, planner, memory) and improve via prompts/config. EVA ships the
-**mechanism to grow one safely**:
+EVA is initially released from the **seed** — the **smallest viable organism plus an immune system**
+(gates, ratchet, policies, manifest hashes), not a product. New organs and skills are
+*earned* through use and friction.
 
 | | Most agent frameworks | EVA |
 |---|---|---|
-| Architecture | fixed, shipped up front | a generation-0 **seed** EVA can rewrite |
+| Architecture | fixed, shipped up front | evolves through generations |
 | Self-improvement | prompt/config tweaks | rewrites its own **code** as a gated release |
 | Safety of self-change | manual / none | ratchet + independent **kernel gate** + rollback ledger |
-| New capability | you code a plugin | **earned from real usage**, then promoted |
-| First run | keys & services | `EVA_PROVIDER=fake` or local Ollama — one command |
+| New capability | you code a plugin | **earned from real usage and self-inspection**, then promoted |
+
 
 ## The idea in one picture
 
@@ -94,59 +88,20 @@ flowchart TB
 - **`runtime/releases/vNNN/`** are the live, evolvable versions. EVA edits a
   *candidate*, the gates test it, and only then does EVA **swap itself** for it.
 
-## Architecture: one clean seam
-
-The core talks only to **collaborators**, never to a provider or a terminal
-directly. That single seam is what keeps EVA portable and lets it rewrite any
-layer without re-inventing the loop.
-
-| Module | Responsibility |
-|---|---|
-| `core.py` | Provider-neutral turn loop + the `Event`/`Tool`/`ToolCall` types. Knows nothing about OpenAI, CLIs or wire formats. |
-| `adapters.py` | `ModelAdapter`s: `openai_chat` (native tool calls or a portable JSON-text fallback), `anthropic` (Claude Messages API + prompt caching) and an offline `fake` for tests. |
-| `tools.py` | Canonical tools + sandboxed runtime + the explicit **mode-policy table** (who may write/shell/promote). |
-| `human.py` | `HumanInterface` + `ApprovalPolicy` (approve `[y/N/f]`; **`f`** reveals the full command) + host clipboard bridge. |
-| `session.py` | Append-only event log = the **source of truth**, with image **blobs** kept out of the log. |
-| `context.py` | Deterministic, LLM-free **compaction** — sends the full log while it fits, then a condensed view. |
-| `self_model.py` | **Generated** self-knowledge: EVA reads its own anatomy/skills/capabilities/policy on demand (it is not preloaded). |
-| `tui.py` | The status view — human-readable, on-the-fly "what is EVA doing now". |
-| `agent.py` | Wiring + the CLI/chat loop; the four modes; the friction backlog and improve-pivot. |
-| `supervisor.py` | Release gates: required files, the **ratchet**, smoke, dry-runs, qualification rounds. |
-| `tests.py` | LLM-free checks — the ratchet itself (every promotion runs them). |
-| `evals.py` | **Golden traces**: recorded provider responses replayed through the *real* adapters + loop + runtime (offline, in the gate) — plus an opt-in live smoke. |
-
-Because the self-model is *generated from the live code*, EVA always knows the
-release it is actually running and its current toolset — call `inspect_self`
-(`overview` · `anatomy` · `skills` · `capabilities` · `policy`).
-
-## Modes
-
-`work`, `improve`, and `review` run as an **interactive chat**: started without a
-task, EVA asks for your first message; reply after each turn; empty line or
-`exit` ends it.
-
-| Command | What it does |
-|---|---|
-| `work [task]` | Useful work in `workspace/`. Can inspect itself, but **never** edits its own code. |
-| `review [task]` | Read-only inspection — no writes, no evolution. |
-| `improve [task]` | **Directed** self-change — builds a gated candidate that implements *your* task. |
-| `evolve [N]` | **Autonomous** self-change — EVA picks the improvement, announces it, then implements N rounds. |
-| `<mode> resume` | Continue your previous (interactive) session — each mode keeps its own. |
-| `status` / `rollback` | Show the active/last-good release / roll back along the ledger. |
-| `reseed` | Re-seed `v001` from `seed/` after editing the genome (no rebuild — the seed is mounted). |
-
 ## How it evolves
 
-The clip below is a single **`improve`** run, unedited. Asked to *"design and implement
-a skill registry"*, EVA reads its own code (`inspect_self`, `read_file`), clones the
-active release into a safe **candidate** (`make_candidate`), writes a new
-`skill_registry.py` **plus tests**, runs the candidate's suite (`run_tests`), and only
-then **requests promotion** — which the supervisor + kernel gate before anything goes
-live. A real self-change, end to end, under the guardrails.
+Example `improve` run: EVA adds a skill registry to itself
+
+1. inspects its own architecture
+2. creates v001-candidate
+3. writes skill_registry.py
+4. adds tests
+5. passes supervisor + kernel gate
+6. asks for promotion
 
 ![EVA improving itself — inspect → candidate → write + test → gated promotion](docs/Eva-improve.gif)
 
-EVA self-changes in **two modes**, and both land the same way — a
+EVA can self-change itself in **two modes**, and both land the same way — a
 **candidate → tests → gated promotion**. They differ only in *who picks the change*:
 
 - **`improve` — directed.** You hand EVA one concrete task (the run above:
@@ -185,6 +140,43 @@ responses) and three standing guarantees:
    self-improvement path) and rehashes the promoted release's manifest so it can
    never lie about its own content. These checks live where the agent can't edit
    them.
+
+## Komponents
+
+| Module | Responsibility |
+|---|---|
+| `core.py` | Provider-neutral turn loop + the `Event`/`Tool`/`ToolCall` types. Knows nothing about providers, CLIs or wire formats, which keeps EVA portable and lets it rewrite any layer without re-inventing the loop.
+| `adapters.py` | `ModelAdapter`s: `openai_chat` (native tool calls or a portable JSON-text fallback), `anthropic` (Claude Messages API + prompt caching) and an offline `fake` for tests. |
+| `tools.py` | Canonical tools + sandboxed runtime + the explicit **mode-policy table** (who may write/shell/promote). |
+| `human.py` | `HumanInterface` + `ApprovalPolicy` (approve `[y/N/f]`; **`f`** reveals the full command) + host clipboard bridge. |
+| `session.py` | Append-only event log = the **source of truth**, with image **blobs** kept out of the log. |
+| `context.py` | Deterministic, LLM-free **compaction** — sends the full log while it fits, then a condensed view. |
+| `self_model.py` | **Generated** self-knowledge: EVA reads its own anatomy/skills/capabilities/policy on demand (it is not preloaded). |
+| `tui.py` | The status view — human-readable, on-the-fly "what is EVA doing now". |
+| `agent.py` | Wiring + the CLI/chat loop; the four modes; the friction backlog and improve-pivot. |
+| `supervisor.py` | Release gates: required files, the **ratchet**, smoke, dry-runs, qualification rounds. |
+| `tests.py` | LLM-free checks — the ratchet itself (every promotion runs them). |
+| `evals.py` | **Golden traces**: recorded provider responses replayed through the *real* adapters + loop + runtime (offline, in the gate) — plus an opt-in live smoke. |
+
+Because the self-model is *generated from the live code*, EVA always knows the
+release it is actually running and its current toolset — `inspect_self`
+(`overview` · `anatomy` · `skills` · `capabilities` · `policy`).
+
+## Modes
+
+`work`, `improve`, and `review` run as an **interactive chat**: started without a
+task, EVA asks for your first message; reply after each turn; empty line or
+`exit` ends it.
+
+| Command | What it does |
+|---|---|
+| `work [task]` | Useful work in `workspace/`. Can inspect itself, but **never** edits its own code. |
+| `review [task]` | Read-only inspection — no writes, no evolution. |
+| `improve [task]` | **Directed** self-change — builds a gated candidate that implements *your* task. |
+| `evolve [N]` | **Autonomous** self-change — EVA picks the improvement, announces it, then implements N rounds. |
+| `<mode> resume` | Continue your previous (interactive) session — each mode keeps its own. |
+| `status` / `rollback` | Show the active/last-good release / roll back along the ledger. |
+| `reseed` | Re-seed `v001` from `seed/` after editing the genome (no rebuild — the seed is mounted). |
 
 ## Contained, not "safe"
 
@@ -236,7 +228,19 @@ numbered menu → masked API-key entry) and writes `.env`; if `.env` exists but 
 value is missing, only that is asked. Prefer to do it by hand? Copy `.env.example` to
 `.env` (every option documented) and edit it. Skip the wizard with `EVA_NO_SETUP=1`.
 
-On Linux/macOS use `./run.sh` with the same commands. Other useful ones:
+On Linux/macOS use `./run.sh` with the same commands.
+
+**Optional — type `eva` instead of `.\run.ps1`.** Run `.\run.ps1 install` once
+(Linux/macOS: `./run.sh install`). It wires everything up in one step: puts `eva` on your
+`PATH`, enables `<Tab>` command completion (PowerShell, bash, zsh), and offers to build the
+image if it isn't built yet. Open a new terminal and call any command directly — `eva build`,
+`eva`, `eva reseed`, `eva improve …`, `eva evolve 3 --yes` — with `eva <Tab>` listing them. On
+Windows this puts `bin/` on your `PATH` and adds a block to your PowerShell `$PROFILE`; on
+Linux/macOS it symlinks `bin/eva` into `~/.local/bin` and adds a block to your `~/.bashrc` /
+`~/.zshrc`. `eva uninstall` removes all of it again. The examples below use `.\run.ps1`, but
+each line works the same as `eva <command>`.
+
+Other useful commands:
 
 ```powershell
 .\run.ps1 improve "add a CHANGELOG and report it in work mode"   # directed self-change
@@ -290,6 +294,8 @@ seed/v001/           the genome (layered, hash-pinned), baked into the image
 Dockerfile           hardened, non-root image (kernel + seed + Node.js)
 docker-compose.yml   the sandbox (read-only fs, caps dropped, resource limits)
 run.ps1 / run.sh     wrappers (build/work/improve/review/evolve/paste/reseed/rollback/status)
+bin/                 `eva` command shims (eva, eva.cmd) — added to PATH by `run.ps1 install`
+completions/         eva tab-completion (PowerShell / bash / zsh)
 data/                created at runtime; all evolution lives here (git-ignored)
 ```
 

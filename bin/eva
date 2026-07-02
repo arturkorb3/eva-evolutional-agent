@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Thin shim so you can type `eva <command>` instead of `./run.sh <command>`.
+# Forwards every argument to run.sh in the repo root (one level up). Resolves
+# symlinks so it still finds run.sh when linked onto PATH (e.g. ~/.local/bin/eva).
+# Put on PATH via `./run.sh install` (or `eva install`).
+set -euo pipefail
+src="${BASH_SOURCE[0]}"
+while [ -h "$src" ]; do
+  d="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ $src != /* ]] && src="$d/$src"
+done
+dir="$(cd -P "$(dirname "$src")/.." && pwd)"
+exec "$dir/run.sh" "$@"

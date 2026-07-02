@@ -11,3 +11,4 @@ data_backup_*/
 # Python
 __pycache__/
 *.pyc
+scratch.txt

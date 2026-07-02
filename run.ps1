@@ -245,6 +245,83 @@ if ($Command -in @("work", "improve", "review", "evolve")) {
 
 switch ($Command) {
     "build" { docker compose build }
+    "install" {
+        # One-shot setup: put `eva` on PATH (via bin/) + enable tab-completion, and
+        # optionally build the image. All reversible via `uninstall`.
+        $dir = $PSScriptRoot
+        $bin = Join-Path $dir "bin"
+        $comp = Join-Path $dir "completions\eva.ps1"
+        $begin = "# >>> eva tab-completion >>>"
+        $end = "# <<< eva tab-completion <<<"
+
+        # 1) PATH -> bin/ only (keeps run.ps1 / Dockerfile / compose off your PATH).
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        $parts = @($userPath -split ';' | Where-Object { $_ -ne '' })
+        if ($parts -notcontains $bin) {
+            [Environment]::SetEnvironmentVariable("Path", ((@($parts) + $bin) -join ';'), "User")
+            Write-Host "PATH        : added $bin" -ForegroundColor Green
+        }
+        else {
+            Write-Host "PATH        : already present" -ForegroundColor DarkGray
+        }
+        if (($env:Path -split ';') -notcontains $bin) { $env:Path = "$env:Path;$bin" }
+
+        # 2) Tab-completion: refresh a marked block in the profile.
+        $profilePath = $PROFILE.CurrentUserAllHosts
+        $pdir = Split-Path -Parent $profilePath
+        if (-not (Test-Path -LiteralPath $pdir)) { New-Item -ItemType Directory -Path $pdir -Force | Out-Null }
+        $kept = New-Object System.Collections.Generic.List[string]
+        $skip = $false
+        if (Test-Path -LiteralPath $profilePath) {
+            foreach ($l in @(Get-Content -LiteralPath $profilePath)) {
+                if ($l -eq $begin) { $skip = $true; continue }
+                if ($l -eq $end) { $skip = $false; continue }
+                if (-not $skip) { $kept.Add($l) }
+            }
+        }
+        $kept.Add($begin); $kept.Add(". `"$comp`""); $kept.Add($end)
+        Set-Content -LiteralPath $profilePath -Value $kept -Encoding UTF8
+        Write-Host "Completion  : wired into $profilePath" -ForegroundColor Green
+        . $comp   # load completion into THIS session too
+
+        # 3) Offer to build the sandbox image if it isn't there yet.
+        $haveImage = $false
+        try { docker image inspect eva:latest *> $null; if ($LASTEXITCODE -eq 0) { $haveImage = $true } } catch {}
+        Write-Host ""
+        if ($haveImage) {
+            Write-Host "Image       : eva:latest present" -ForegroundColor DarkGray
+        }
+        elseif ($env:EVA_NO_SETUP -ne "1") {
+            $ans = Read-Host "Build the sandbox image now? (needs Docker running) [Y/n]"
+            if ($ans -notmatch '^\s*(n|no)\s*$') { docker compose build }
+            else { Write-Host "Skipped - build later with:  eva build" }
+        }
+        Write-Host ""
+        Write-Host "Done. Open a NEW terminal (or run: . `$PROFILE) and try:  eva <Tab>" -ForegroundColor Green
+        Write-Host "Then just:  eva"
+    }
+    "uninstall" {
+        $dir = $PSScriptRoot
+        $bin = Join-Path $dir "bin"
+        $begin = "# >>> eva tab-completion >>>"
+        $end = "# <<< eva tab-completion <<<"
+        # Drop bin/ (and, for anyone upgrading, an older whole-repo entry) from PATH.
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        $parts = @($userPath -split ';' | Where-Object { $_ -ne '' -and $_ -ne $bin -and $_ -ne $dir })
+        [Environment]::SetEnvironmentVariable("Path", ($parts -join ';'), "User")
+        $profilePath = $PROFILE.CurrentUserAllHosts
+        if (Test-Path -LiteralPath $profilePath) {
+            $kept = New-Object System.Collections.Generic.List[string]
+            $skip = $false
+            foreach ($l in @(Get-Content -LiteralPath $profilePath)) {
+                if ($l -eq $begin) { $skip = $true; continue }
+                if ($l -eq $end) { $skip = $false; continue }
+                if (-not $skip) { $kept.Add($l) }
+            }
+            Set-Content -LiteralPath $profilePath -Value $kept -Encoding UTF8
+        }
+        Write-Host "Removed eva from PATH and tab-completion from the profile (open a new terminal)."
+    }
     "status" { Invoke-Eva @("status") }
     "rollback" { Invoke-Eva (@("rollback") + $Rest) }
     "unlock" { Invoke-Eva @("unlock") }
@@ -327,9 +404,11 @@ Write-Output 'OK'
         @"
 EVA - Evolvable Virtual Agent (Docker sandbox)
 
-Usage: .\run.ps1 <command> [args]
+Usage: .\run.ps1 <command> [args]   (or, after `install`, simply:  eva <command> [args])
 
   build                 Build (or rebuild) the sandbox image
+  install               Set up the `eva` command: PATH + tab-completion (+ optional build)
+  uninstall             Undo `install` (remove from PATH + tab-completion)
   status                Show current / last-good release
   work    [task]        Useful work in workspace/ (default mode)
   improve [task]        Evolve a candidate release

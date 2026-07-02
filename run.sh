@@ -210,6 +210,53 @@ esac
 
 case "$cmd" in
   build)    docker compose build ;;
+  install)
+    # One-shot setup: symlink `eva` (bin/eva) into ~/.local/bin, wire PATH +
+    # tab-completion into your shell rc, and optionally build the image. Undo: uninstall.
+    dir="$(cd "$(dirname "$0")" && pwd)"
+    bindir="$HOME/.local/bin"
+    mkdir -p "$bindir"
+    chmod +x "$dir/bin/eva" "$dir/completions/eva.bash" 2>/dev/null || true
+    ln -sf "$dir/bin/eva" "$bindir/eva"
+    echo "shim       : linked $bindir/eva -> $dir/bin/eva"
+    case "${SHELL:-}" in *zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
+    touch "$rc"
+    tmp="$(mktemp)"
+    # Strip any previous eva block, then append a fresh one (PATH + completion).
+    awk -v b="# >>> eva >>>" -v e="# <<< eva <<<" '$0==b{s=1} !s{print} $0==e{s=0}' "$rc" > "$tmp" 2>/dev/null || true
+    {
+      echo "# >>> eva >>>"
+      echo "export PATH=\"\$HOME/.local/bin:\$PATH\""
+      echo "[ -f \"$dir/completions/eva.bash\" ] && source \"$dir/completions/eva.bash\""
+      echo "# <<< eva <<<"
+    } >> "$tmp"
+    mv "$tmp" "$rc"
+    echo "shell      : PATH + tab-completion wired into $rc"
+    # Offer to build the sandbox image if Docker is present and it isn't built yet.
+    if command -v docker >/dev/null 2>&1; then
+      if docker image inspect eva:latest >/dev/null 2>&1; then
+        echo "image      : eva:latest present"
+      elif [ "${EVA_NO_SETUP:-}" != "1" ]; then
+        printf "Build the sandbox image now? (needs Docker running) [Y/n] "
+        read -r ans </dev/tty || ans=""
+        case "$ans" in n|N|no|NO) echo "Skipped - build later with:  eva build" ;; *) docker compose build ;; esac
+      fi
+    fi
+    echo
+    echo "Done. Open a NEW terminal (or run: source $rc) and try:  eva <Tab>"
+    echo "Then just:  eva"
+    ;;
+  uninstall)
+    bindir="$HOME/.local/bin"
+    if [ -L "$bindir/eva" ]; then rm -f "$bindir/eva"; echo "Removed $bindir/eva"; fi
+    case "${SHELL:-}" in *zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
+    if [ -f "$rc" ]; then
+      tmp="$(mktemp)"
+      awk -v b="# >>> eva >>>" -v e="# <<< eva <<<" '$0==b{s=1} !s{print} $0==e{s=0}' "$rc" > "$tmp" 2>/dev/null || true
+      mv "$tmp" "$rc"
+      echo "Removed eva block from $rc (open a new terminal)."
+    fi
+    ;;
   status)   eva status ;;
   rollback) eva rollback "$@" ;;
   unlock)   eva unlock ;;
@@ -272,9 +319,11 @@ case "$cmd" in
     cat <<'EOF'
 EVA - Evolvable Virtual Agent (Docker sandbox)
 
-Usage: ./run.sh <command> [args]
+Usage: ./run.sh <command> [args]   (or, after `install`, simply:  eva <command> [args])
 
   build                 Build (or rebuild) the sandbox image
+  install               Set up the `eva` command: PATH + tab-completion (+ optional build)
+  uninstall             Undo `install` (remove symlink + shell rc block)
   status                Show current / last-good release
   work    [task]        Useful work in workspace/ (default mode)
   improve [task]        Evolve a candidate release

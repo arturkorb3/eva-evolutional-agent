@@ -41,7 +41,7 @@
     "human.py": "341ac345e8456a589c6f9769b8f5c09386ceae3811128f0be0bbf1d068d5e8b6",
     "session.py": "1f44e3b491b22d1b40447804a4440d1e9cb40a0784c1e84ad0862c147ead7f45",
     "self_model.py": "574e60b2c04d8c1b49bf5b9ce1c19d5646cfda7315f3b030c12c431f69b1ca9f",
-    "tui.py": "029bdbe1be3f41797e206704f6ee64674f65d13375027b5a3eb8edf124c6c113",
+    "tui.py": "83f762ef79811a8583da9b71f69f96ec0ee92c08d7e5aad4e0b7b80175ef0412",
     "context.py": "49411ac75aa0a4b8c6b6ae60bda47b0e10fd3a3ce86b34c7cf67ab1d441d2d13",
     "evals.py": "ee3cf8d30a58d62e546ba8d6ff7f6a2162db7ed71f9bbf2ac6ac86c4f7913da9"
   }
