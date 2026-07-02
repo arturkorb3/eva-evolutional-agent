@@ -172,6 +172,34 @@ def candidate_gate(candidate_rel, rounds=2):
         return False
     if not gates_not_weakened(path):
         return False
+
+    # Opt-in prompt admission audit (EVA_PROMPT_AUDIT, default OFF): a defense-in-depth SENSOR
+    # that screens changes to the PROMPT SURFACE (system prompts, tool descriptions, mode/
+    # self-model text) for gate-weakening / approval-bypass / deception / secret-exfil. It runs
+    # in THIS (trusted, current) release's process against the candidate, can only tighten
+    # (block/warn -> reject), and is fail-closed. Default off -> the gate is unchanged.
+    try:
+        import prompt_audit
+    except Exception:
+        prompt_audit = None
+    if prompt_audit and prompt_audit.enabled():
+        adapter = None
+        if prompt_audit.llm_enabled():
+            try:
+                from adapters import make_adapter
+                adapter = make_adapter()
+            except Exception:
+                adapter = None  # audit() fails closed when the LLM layer has no adapter
+        verdict, findings = prompt_audit.audit(RELEASE, path, adapter=adapter)
+        if verdict != "pass":
+            print(f"Prompt audit {verdict.upper()} - rejecting candidate.")
+            print("You reap what you sow....")
+            print(json.dumps(findings, ensure_ascii=False)[:800])
+            log("promotion_prompt_audit_rejected",
+                {"candidate": rel, "verdict": verdict, "findings": findings})
+            return False
+        log("promotion_prompt_audit_pass", {"candidate": rel})
+
     env = {"ORGANISM_ROOT": str(ROOT), "ACTIVE_RELEASE": str(path)}
     checks = [
         [sys.executable, path / "tests.py", "--self"],

@@ -441,14 +441,23 @@ def _parse_ddg(page: str, limit: int) -> list:
 # --------------------------------------------------------------------------- #
 # Consistent "human declined" feedback
 # --------------------------------------------------------------------------- #
-def _declined(call: ToolCall, action: str) -> ToolObservation:
+def _declined(call: ToolCall, action: str, feedback: "str | None" = None) -> ToolObservation:
     """Turn a human 'no' into an observation the model can act on sensibly.
 
     A terse "rejected." made the model re-request the SAME action in a loop. This
     tells it plainly that the human made a deliberate choice, so the right move is
     to acknowledge it, NOT retry the identical call, and ask what the person would
     prefer (a different approach, a narrower step, or moving on) - or just answer
-    without the tool."""
+    without the tool. When the human typed a natural-language reply at the prompt,
+    that reply is their real instruction and is surfaced here so it is not lost."""
+    if feedback:
+        return ToolObservation(
+            call.id, call.name,
+            f"The human did NOT approve this {action}; instead they replied: "
+            f"{feedback!r}\nTreat this reply as their instruction for the next step. "
+            f"Do NOT repeat the declined call - act on what they said (if it is "
+            f"unclear, ask a brief question).",
+        )
     return ToolObservation(
         call.id, call.name,
         f"The human declined this {action}. This was a deliberate choice, not an "
@@ -547,8 +556,9 @@ class ShellToolRuntime:
         risk = RISK_NONE if read_only else RISK_SHELL
         # The command is shown compactly on the activity (▸) line; the FULL command is
         # passed as detail so the human can reveal it with 'f' before approving.
-        if not self.approval.approve(risk, "Approve shell?", detail=cmd):
-            return _declined(call, "shell command")
+        decision = self.approval.approve(risk, "Approve shell?", detail=cmd)
+        if not decision:
+            return _declined(call, "shell command", decision.feedback)
 
         try:
             timeout = int(call.arguments.get("timeout", 60))
@@ -558,6 +568,7 @@ class ShellToolRuntime:
         self._running("shell")
         r = subprocess.run(
             cmd, cwd=str(self.workspace), shell=True,
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=timeout,
         )
         out = (f"exit={r.returncode}\n"
@@ -602,8 +613,9 @@ class ShellToolRuntime:
         if content.strip():
             preview = content if len(content) <= 4000 else content[:4000] + "\n...(truncated)"
             detail += "\n\n" + preview
-        if not self.approval.approve(RISK_WRITE, "Approve file write?", detail=detail):
-            return _declined(call, "file write")
+        decision = self.approval.approve(RISK_WRITE, "Approve file write?", detail=detail)
+        if not decision:
+            return _declined(call, "file write", decision.feedback)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         if target.suffix == ".py":
@@ -659,8 +671,9 @@ class ShellToolRuntime:
                                    f"Ambiguous: 'old' occurs {n} times; add more "
                                    "surrounding context to make it unique.")
         detail = f"edit {target}\n  - {old.strip()[:400]}\n  + {new.strip()[:400]}"
-        if not self.approval.approve(RISK_WRITE, "Approve file edit?", detail=detail):
-            return _declined(call, "file edit")
+        decision = self.approval.approve(RISK_WRITE, "Approve file edit?", detail=detail)
+        if not decision:
+            return _declined(call, "file edit", decision.feedback)
         target.write_text(text.replace(old, new, 1), encoding="utf-8")
         if target.suffix == ".py":
             try:
@@ -716,8 +729,9 @@ class ShellToolRuntime:
                                        f"Denied: result is not valid Python ({exc.msg} at "
                                        f"line {exc.lineno}); nothing written.")
         detail = f"apply_patch {target}  ({len(edits)} edits)\n" + "\n".join(previews)
-        if not self.approval.approve(RISK_WRITE, "Approve file patch?", detail=detail):
-            return _declined(call, "file patch")
+        decision = self.approval.approve(RISK_WRITE, "Approve file patch?", detail=detail)
+        if not decision:
+            return _declined(call, "file patch", decision.feedback)
         target.write_text(working, encoding="utf-8")
         if target.suffix == ".py":
             try:
@@ -811,9 +825,10 @@ class ShellToolRuntime:
         if dst.exists():
             return ToolObservation(call.id, call.name,
                                    f"Candidate already exists: {name} (edit it, or pick another name).")
-        if not self.approval.approve(RISK_WRITE, "Approve create candidate?",
-                                     detail=f"clone {active} -> {name}"):
-            return _declined(call, "candidate-release creation")
+        decision = self.approval.approve(RISK_WRITE, "Approve create candidate?",
+                                         detail=f"clone {active} -> {name}")
+        if not decision:
+            return _declined(call, "candidate-release creation", decision.feedback)
         try:
             shutil.copytree(src, dst,
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -840,8 +855,8 @@ class ShellToolRuntime:
         self._running("run_tests")
         try:
             r = subprocess.run([sys.executable, str(tests), "--self"],
-                               cwd=str(tests.parent), capture_output=True, text=True,
-                               timeout=240)
+                               cwd=str(tests.parent), stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=240)
         except Exception as exc:
             return ToolObservation(call.id, call.name, f"run_tests error: {exc}")
         tail = (r.stdout or "")[-self.max_output:]
@@ -894,9 +909,10 @@ class ShellToolRuntime:
                                    "runtime/releases/.")
 
         reason = str(call.arguments.get("reason", "") or "")
-        if not self.approval.approve(RISK_PROMOTE, "Approve promotion request?",
-                                     detail=f"promote {name}"):
-            return _declined(call, "promotion request")
+        decision = self.approval.approve(RISK_PROMOTE, "Approve promotion request?",
+                                         detail=f"promote {name}")
+        if not decision:
+            return _declined(call, "promotion request", decision.feedback)
 
         self.state.mkdir(parents=True, exist_ok=True)
         (self.state / "promotion_request.json").write_text(json.dumps({

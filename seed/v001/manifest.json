@@ -15,6 +15,7 @@
     "tui.py",
     "context.py",
     "evals.py",
+    "prompt_audit.py",
     "manifest.json"
   ],
   "layers": {
@@ -29,20 +30,22 @@
     "evals.py": "golden-trace evals: replay recorded provider responses through the real adapter+loop+runtime (offline, gate-safe) + guarded live smoke",
     "agent.py": "wiring + CLI (work/improve/review/evolve)",
     "supervisor.py": "release gates + promotion/pivot orchestration",
-    "tests.py": "LLM-free checks (ratchet)"
+    "tests.py": "LLM-free checks (ratchet)",
+    "prompt_audit.py": "opt-in prompt admission audit: deterministic prompt-surface diff + static rules + optional nonce-guarded LLM judge (sensor on promotion, never an anchor)"
   },
   "hashes": {
-    "supervisor.py": "960a5520aea4a2de2e6d0a8d2265d2a95fd5d003351f8fdac0c5dfcc5888b372",
-    "agent.py": "177c1a681c9e259369069ff0150b98d8dbb47550326ef64346aba0c8bb900b0b",
-    "tests.py": "da3f9e37dab1c1dd67eafcc8a7db3868c83e664c18b5fcd562bd20e78005fe4a",
+    "supervisor.py": "96a85c57866815bf364ea8750bc616400fb11595ec1ec73ef27d71dfde3592ea",
+    "agent.py": "269e60e9783ced0a8ebe11c51479800e78a5a6ac83aa96eb04610a38dc153bb6",
+    "tests.py": "54344b70af9974551c29d146015ccf211575bc93e6441a48099879ec175c61d8",
     "core.py": "c877e3a7733f62cb76a1f8f8c167125d703886a1c6c24607871bc6f361befaea",
-    "adapters.py": "4520330baa8bd45e068ee01f79aad32d44d89f82727a1788671e3501ea95b89e",
-    "tools.py": "197828cb0f0b4af1d7e69ba00e12976d6d3a809e13b7503b91588238b522fb90",
-    "human.py": "9844e6385e3dbb52f56b974a3d64ceb3591d3eaf52180c4b0ec7b4eaba591ebb",
+    "adapters.py": "0486ab8e95ccc36236fa9844f1e96b6db089a49f7715b47dc94692b99c49f714",
+    "tools.py": "5c41bb8340f4e874bbb3a91dbd18b4670e85aed7088e4c0f243bc568cb55df47",
+    "human.py": "d5ad8aff82bca6f5389d0753b4659e9a64d4e4bbfee57943244e58ca55dd0b04",
     "session.py": "1f44e3b491b22d1b40447804a4440d1e9cb40a0784c1e84ad0862c147ead7f45",
     "self_model.py": "55d5414b69cd5eaccd7ba218b985361aff567f2ff3b01ca6dd4708913804bb59",
     "tui.py": "cd16f71d71bcc1dbfa78e2ac0b3078d256c0686c9567f92612cb02d6f2543406",
     "context.py": "49411ac75aa0a4b8c6b6ae60bda47b0e10fd3a3ce86b34c7cf67ab1d441d2d13",
-    "evals.py": "ee3cf8d30a58d62e546ba8d6ff7f6a2162db7ed71f9bbf2ac6ac86c4f7913da9"
+    "evals.py": "ee3cf8d30a58d62e546ba8d6ff7f6a2162db7ed71f9bbf2ac6ac86c4f7913da9",
+    "prompt_audit.py": "25710d200566198f030f899173fd892ab7fae3e9f096e64a4dcae4aaf4c0ba29"
   }
 }

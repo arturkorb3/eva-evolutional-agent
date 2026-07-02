@@ -174,12 +174,28 @@ def extract_image_attachments(text, base_dir="."):
     return " ".join(kept).strip(), images
 
 
+class Confirmation:
+    """Result of a human confirm(): truthy when approved. `feedback` carries any free
+    text the human typed at the prompt (e.g. "no, do X instead") so a natural-language
+    reply reaches the model instead of being swallowed by the y/N gate."""
+
+    __slots__ = ("approved", "feedback")
+
+    def __init__(self, approved: bool, feedback: "str | None" = None):
+        self.approved = bool(approved)
+        fb = (feedback or "").strip()
+        self.feedback = fb or None
+
+    def __bool__(self) -> bool:
+        return self.approved
+
+
 class HumanInterface:
     """Abstract human channel."""
 
     interactive = True
 
-    def confirm(self, prompt: str, detail: "str | None" = None) -> bool:
+    def confirm(self, prompt: str, detail: "str | None" = None) -> "Confirmation":
         raise NotImplementedError
 
 
@@ -188,7 +204,7 @@ class CliHumanInterface(HumanInterface):
 
     interactive = True
 
-    def confirm(self, prompt: str, detail: "str | None" = None) -> bool:
+    def confirm(self, prompt: str, detail: "str | None" = None) -> "Confirmation":
         # When a `detail` (e.g. the full shell command) is available, offer an 'f'
         # (full) key: it reveals the detail on demand and re-prompts, so the normal
         # stream stays compact but nothing is ever approved blind.
@@ -196,13 +212,22 @@ class CliHumanInterface(HumanInterface):
         while True:
             try:
                 sys.stdout.flush()
-                ans = input(f"{prompt} {opts} ").strip().lower()
+                raw = input(f"{prompt} {opts} ").strip()
             except EOFError:
-                return False
-            if detail and ans in ("f", "full"):
+                return Confirmation(False)
+            low = raw.lower()
+            if detail and low in ("f", "full"):
                 print("  " + str(detail).replace("\n", "\n  "))
                 continue
-            return ans == "y"
+            if low in ("y", "yes"):
+                return Confirmation(True)
+            if low in ("", "n", "no"):
+                return Confirmation(False)
+            # A natural-language reply (e.g. "no, do X instead") NEVER counts as approval
+            # - ambiguous input must fail safe - but the words are the human's real
+            # intent, so carry them as feedback to reach the model instead of being
+            # silently swallowed by the y/N prompt.
+            return Confirmation(False, feedback=raw)
 
 
 class AutoHumanInterface(HumanInterface):
@@ -216,9 +241,9 @@ class AutoHumanInterface(HumanInterface):
     def __init__(self, *, default_confirm: bool = True):
         self.default_confirm = default_confirm
 
-    def confirm(self, prompt: str, detail: "str | None" = None) -> bool:
+    def confirm(self, prompt: str, detail: "str | None" = None) -> "Confirmation":
         print(prompt + (" [auto-yes]" if self.default_confirm else " [auto-no]"))
-        return self.default_confirm
+        return Confirmation(self.default_confirm)
 
 
 # Risk levels an action can carry.
@@ -242,15 +267,17 @@ class ApprovalPolicy:
         self.mode = mode
         self.allow_shell = allow_shell
 
-    def approve(self, risk: str, prompt: str, detail: "str | None" = None) -> bool:
+    def approve(self, risk: str, prompt: str, detail: "str | None" = None) -> "Confirmation":
         if risk == RISK_NONE:
-            return True
+            return Confirmation(True)
         if risk == RISK_SHELL and self.allow_shell:
-            return True
+            return Confirmation(True)
         if self.mode == "never":
-            return True
+            return Confirmation(True)
         if self.mode == "on-risk" and risk == RISK_NONE:
-            return True
+            return Confirmation(True)
         # `detail` (the full command/content) is passed through, not dumped: the human
-        # can reveal it on demand with the 'f' key before deciding.
-        return self.human.confirm(prompt, detail)
+        # can reveal it on demand with the 'f' key before deciding. A free-text reply is
+        # returned as decline+feedback so the human's words reach the model.
+        result = self.human.confirm(prompt, detail)
+        return result if isinstance(result, Confirmation) else Confirmation(bool(result))

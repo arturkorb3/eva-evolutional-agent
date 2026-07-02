@@ -78,6 +78,12 @@ services:
       EVA_TUI_FULL: "${EVA_TUI_FULL:-}"
       NO_COLOR: "${NO_COLOR:-}"
       EVA_STREAM: "${EVA_STREAM:-}"
+      # Prompt spotlighting (opt-in, default off): frame tool/web/file output as untrusted data.
+      EVA_PROMPT_SPOTLIGHT: "${EVA_PROMPT_SPOTLIGHT:-}"
+      # Prompt admission audit on promotion (opt-in, default off): screen candidate prompt-surface
+      # changes. =1 deterministic; =llm (or EVA_PROMPT_AUDIT_LLM=1) adds the nonce-guarded LLM judge.
+      EVA_PROMPT_AUDIT: "${EVA_PROMPT_AUDIT:-}"
+      EVA_PROMPT_AUDIT_LLM: "${EVA_PROMPT_AUDIT_LLM:-}"
       # Sandbox mode (safe | free). Safe = this hardened container (default). The free
       # override (docker-compose.free.yml) sets this to "free" and relaxes containment so
       # EVA may install system packages; EVA reads it to know what it is allowed to do.

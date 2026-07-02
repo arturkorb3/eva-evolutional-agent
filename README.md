@@ -178,6 +178,31 @@ task, EVA asks for your first message; reply after each turn; empty line or
 | `status` / `rollback` | Show the active/last-good release / roll back along the ledger. |
 | `reseed` | Re-seed `v001` from `seed/` after editing the genome (no rebuild — the seed is mounted). |
 
+## EVA tries to stay good
+
+Self-modification is only safe if EVA can't quietly weaken its own guardrails. The
+defenses are **layered**, and each lives where the layer it protects can't edit it:
+
+- **Gated self-change.** No edit goes live in place. Every change becomes a
+  *candidate* that must clear the LLM-free gates — the **ratchet** (never fewer
+  checks than today), the independent **kernel gate** (core identity + a manifest
+  re-hash so a release can't lie about its content), and a recorded **ledger** for
+  multi-step `rollback`.
+- **The prompt surface is gated too** *(opt-in)*. System prompts and tool
+  descriptions are as security-critical as code, so a candidate's **prompt-surface
+  diff** is screened before promotion: deterministic rules catch gate-weakening,
+  approval-bypass and deception, and an optional **LLM judge** — nonce-guarded and
+  **fail-closed** — reviews the rest (`EVA_PROMPT_AUDIT` / `…_AUDIT_LLM`).
+- **Untrusted content stays untrusted** *(opt-in)*. Tool and web output is framed
+  as data, not instructions (**spotlighting**), so a prompt injection hidden in a
+  fetched page can't quietly redirect EVA (`EVA_PROMPT_SPOTLIGHT`).
+- **Humans stay in the loop.** Risky actions (shell, writes, promotion) need an
+  explicit `y`; anything else is *not* approval — a free-text reply **steers** EVA
+  instead of being obeyed blindly. Secrets come from `.env` and are **never logged**.
+
+None of this makes EVA *trustworthy* — it makes misbehaviour **bounded, visible, and
+reversible**. Containment (below) limits whatever still slips through.
+
 ## Contained, not "safe"
 
 Containment limits the *blast radius*; it does not make EVA trustworthy. EVA runs
