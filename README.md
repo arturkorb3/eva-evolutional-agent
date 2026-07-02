@@ -207,64 +207,59 @@ as an *image need* and stops instead of thrashing `apt`. Prefer safe unless you 
 
 ## Quickstart
 
-**Prerequisites:** Docker (Engine + Compose v2) with the daemon running. On Windows/macOS
-that means Docker Desktop (Linux engine) started; on Linux install `docker` and the
-`docker compose` plugin and ensure the Docker service is active (`sudo systemctl start docker`).
-Verify with `docker compose version` before you begin.
+**Prerequisites:** Docker (Engine + Compose v2) running — Docker Desktop on Windows/macOS, or
+the `docker` service on Linux. Verify with `docker compose version`.
 
-> **Linux note.** The sandbox writes to `./data` as an unprivileged sandbox user (uid
-> `10001`), so those files may not be directly deletable by your host user. Run
-> `./run.sh fix-perms` once — it repairs ownership and, if `setfacl` is available
-> (`sudo apt install acl`), also grants your host user access so `reseed` and manual
-> edits work without `sudo`.
+**1. One-time setup.** This enables the `eva` command (adds it to your `PATH` with `<Tab>`
+completion for PowerShell / bash / zsh) and offers to build the sandbox image:
 
 ```powershell
-.\run.ps1 build                  # build the hardened sandbox image
-.\run.ps1                        # start EVA — first run sets up .env interactively
+.\run.ps1 install       # Linux/macOS:  ./run.sh install
 ```
 
-On the first run without a `.env`, the wrapper interviews you (provider → model from a
-numbered menu → masked API-key entry) and writes `.env`; if `.env` exists but a required
-value is missing, only that is asked. Prefer to do it by hand? Copy `.env.example` to
-`.env` (every option documented) and edit it. Skip the wizard with `EVA_NO_SETUP=1`.
-
-On Linux/macOS use `./run.sh` with the same commands.
-
-**Optional — type `eva` instead of `.\run.ps1`.** Run `.\run.ps1 install` once
-(Linux/macOS: `./run.sh install`). It wires everything up in one step: puts `eva` on your
-`PATH`, enables `<Tab>` command completion (PowerShell, bash, zsh), and offers to build the
-image if it isn't built yet. Open a new terminal and call any command directly — `eva build`,
-`eva`, `eva reseed`, `eva improve …`, `eva evolve 3 --yes` — with `eva <Tab>` listing them. On
-Windows this puts `bin/` on your `PATH` and adds a block to your PowerShell `$PROFILE`; on
-Linux/macOS it symlinks `bin/eva` into `~/.local/bin` and adds a block to your `~/.bashrc` /
-`~/.zshrc`. `eva uninstall` removes all of it again. The examples below use `.\run.ps1`, but
-each line works the same as `eva <command>`.
-
-Other useful commands:
+**2. Start EVA** in a new terminal. The first run has no `.env`, so a short wizard asks for
+your provider → model → API key and writes it (skip with `EVA_NO_SETUP=1`, or copy
+`.env.example` to `.env` and edit by hand):
 
 ```powershell
-.\run.ps1 improve "add a CHANGELOG and report it in work mode"   # directed self-change
-.\run.ps1 evolve 3 --yes --allow-shell                           # hands-off (Docker contains it)
-.\run.ps1 status        # active / last-good release
-.\run.ps1 rollback      # step back along the release ledger
+eva                     # start a work session (the default mode)
 ```
+
+From here everything is `eva <command>` — type `eva <Tab>` to list them:
+
+```powershell
+eva improve "add a CHANGELOG and report it in work mode"   # directed self-change
+eva evolve 3 --yes --allow-shell                           # hands-off (Docker contains it)
+eva status                                                 # active / last-good release
+eva rollback                                               # step back along the release ledger
+eva build                                                  # (re)build the sandbox image
+```
+
+> Prefer not to install? Every command also works straight from the repo as
+> `.\run.ps1 <command>` (Windows) or `./run.sh <command>` (Linux/macOS) — that's what `eva`
+> forwards to.
+
+> **Linux note.** The sandbox writes to `./data` as an unprivileged user (uid `10001`), so
+> those files may not be directly deletable by your host user. Run `eva fix-perms` once — it
+> repairs ownership (and, if `setfacl` is available, grants your host user access too).
+
+## Using EVA
 
 **Approvals.** Risky actions prompt `Approve shell? [y/N/f]` — press **`f`** to
 reveal the full command/diff before deciding. Set `EVA_TUI_FULL=1` to expand
 commands and output in the live view.
 
 **Images.** With a vision-capable model, reference a local image path, Markdown
-`![](shot.png)`, or type `/paste` for your latest screenshot. On Windows,
-`run.ps1 work`/`improve` auto-stages clipboard screenshots (`Win+Shift+S` →
-`/paste`); on the host, `/paste` reads the clipboard directly. Images are
-externalized to `data/state/blobs/` to keep the event log small.
+`![](shot.png)`, or type `/paste` for your latest screenshot. On Windows, `eva`/`eva improve`
+auto-stages clipboard screenshots (`Win+Shift+S` → `/paste`); on the host, `/paste` reads the
+clipboard directly. Images are externalized to `data/state/blobs/` to keep the event log small.
 
 **Sessions.** Each `work` run is its own isolated session under
 `data/state/sessions/work/<id>/` (own event log + image blobs). The start screen lists
-resumable sessions; continue one with `work resume` (most recent) or `work resume <id>`,
-and `work --list` shows them all. On resume EVA replays the prior conversation so you can
+resumable sessions; continue one with `eva work resume` (most recent) or `eva work resume <id>`,
+and `eva work --list` shows them all. On resume EVA replays the prior conversation so you can
 pick up the thread. `improve`/`review`/`evolve` stay single + mode-keyed, and
-self-evolution is serialized by a kernel lock (`unlock` clears a dead one).
+self-evolution is serialized by a kernel lock (`eva unlock` clears a dead one).
 
 **Providers.** The core is provider-neutral; pick the adapter in `.env`:
 
