@@ -216,7 +216,9 @@ case "$cmd" in
     dir="$(cd "$(dirname "$0")" && pwd)"
     bindir="$HOME/.local/bin"
     mkdir -p "$bindir"
-    chmod +x "$dir/bin/eva" "$dir/completions/eva.bash" 2>/dev/null || true
+    # Self-heal the executable bit (files created on Windows / checked out without +x):
+    # both run.sh and the eva shim must be executable, or `./run.sh` / `eva` -> permission denied.
+    chmod +x "$dir/run.sh" "$dir/bin/eva" "$dir/completions/eva.bash" 2>/dev/null || true
     ln -sf "$dir/bin/eva" "$bindir/eva"
     echo "shim       : linked $bindir/eva -> $dir/bin/eva"
     case "${SHELL:-}" in *zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
